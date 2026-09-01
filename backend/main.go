@@ -31,6 +31,22 @@ type authStore struct {
 	users  map[string]user
 }
 
+type gameRecord struct {
+	ID          int    `json:"id"`
+	Title       string `json:"title" binding:"required"`
+	Description string `json:"description" binding:"required"`
+	Category    string `json:"category" binding:"required"`
+	PlayTime    string `json:"playTime" binding:"required"`
+	URL         string `json:"url" binding:"required,url"`
+	Cover       string `json:"cover"`
+	AuthorID    string `json:"authorId"`
+	Author      string `json:"author"`
+	Plays       int    `json:"plays"`
+	Likes       int    `json:"likes"`
+	Favorites   int    `json:"favorites"`
+	Comments    int    `json:"comments"`
+}
+
 func newStore() *authStore {
 	return &authStore{nextID: 1, users: make(map[string]user)}
 }
@@ -110,6 +126,11 @@ func authMiddleware() gin.HandlerFunc {
 
 func main() {
 	store := newStore()
+	games := struct {
+		sync.RWMutex
+		nextID int
+		items  []gameRecord
+	}{nextID: 1}
 	r := gin.Default()
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "http://localhost:5173")
@@ -156,7 +177,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"user": u, "token": tokenFor(u, 2*time.Hour), "refresh_token": tokenFor(u, 7*24*time.Hour)})
 	})
 	r.POST("/api/auth/refresh", func(c *gin.Context) {
-		var input struct{ RefreshToken string `json:"refresh_token" binding:"required"` }
+		var input struct {
+			RefreshToken string `json:"refresh_token" binding:"required"`
+		}
 		if err := c.ShouldBindJSON(&input); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "缺少 refresh_token"})
 			return
@@ -195,6 +218,56 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"token": tokenFor(u, 2*time.Hour)})
 	})
 	secured := r.Group("/api", authMiddleware())
+	r.GET("/api/users/:username", func(c *gin.Context) {
+		username := c.Param("username")
+		u, ok := store.find(username)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"message": "用户不存在"})
+			return
+		}
+		games.RLock()
+		published := make([]gameRecord, 0)
+		for _, item := range games.items {
+			if item.AuthorID == username {
+				published = append(published, item)
+			}
+		}
+		games.RUnlock()
+		c.JSON(http.StatusOK, gin.H{"user": u, "published": published})
+	})
+	secured.GET("/games", func(c *gin.Context) {
+		games.RLock()
+		defer games.RUnlock()
+		c.JSON(http.StatusOK, gin.H{"items": games.items})
+	})
+	secured.GET("/games/analytics", func(c *gin.Context) {
+		username, _ := c.Get("username")
+		games.RLock()
+		items := make([]gameRecord, 0)
+		for _, item := range games.items {
+			if item.AuthorID == username.(string) {
+				items = append(items, item)
+			}
+		}
+		games.RUnlock()
+		c.JSON(http.StatusOK, gin.H{"items": items})
+	})
+	secured.POST("/games", func(c *gin.Context) {
+		var input gameRecord
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "请填写完整的游戏信息"})
+			return
+		}
+		username, _ := c.Get("username")
+		games.Lock()
+		input.ID = games.nextID
+		games.nextID++
+		input.AuthorID = username.(string)
+		input.Author = username.(string)
+		games.items = append(games.items, input)
+		games.Unlock()
+		c.JSON(http.StatusCreated, gin.H{"game": input})
+	})
 	secured.GET("/me", func(c *gin.Context) {
 		username, _ := c.Get("username")
 		u, ok := store.find(username.(string))

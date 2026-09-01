@@ -6,6 +6,12 @@ import Games from './views/Games.vue'
 import GameDetail from './views/GameDetail.vue'
 import Login from './views/Login.vue'
 import Register from './views/Register.vue'
+import Forum from './views/Forum.vue'
+import Profile from './views/Profile.vue'
+import Admin from './views/Admin.vue'
+import UserProfile from './views/UserProfile.vue'
+import PostDetail from './views/PostDetail.vue'
+import Analytics from './views/Analytics.vue'
 import './style.css'
 
 const router = createRouter({
@@ -15,7 +21,13 @@ const router = createRouter({
     { path: '/games', component: Games },
     { path: '/games/:id', component: GameDetail },
     { path: '/login', component: Login },
-    { path: '/register', component: Register }
+    { path: '/register', component: Register },
+    { path: '/forum', component: Forum },
+    { path: '/forum/:id', component: PostDetail },
+    { path: '/profile', component: Profile },
+    { path: '/profile/games', component: Analytics },
+    { path: '/users/:id', component: UserProfile },
+    { path: '/admin', component: Admin }
   ]
 })
 
