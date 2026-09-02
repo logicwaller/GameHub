@@ -8,6 +8,7 @@
       <nav>
         <RouterLink to="/">首页</RouterLink>
         <RouterLink to="/games">发现游戏</RouterLink>
+        <RouterLink to="/agent">AI攻略</RouterLink>
         <RouterLink to="/forum">论坛</RouterLink>
       </nav>
       <div class="account">

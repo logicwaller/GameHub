@@ -12,6 +12,7 @@ import Admin from './views/Admin.vue'
 import UserProfile from './views/UserProfile.vue'
 import PostDetail from './views/PostDetail.vue'
 import Analytics from './views/Analytics.vue'
+import Agent from './views/Agent.vue'
 import './style.css'
 import './decorations.css'
 
@@ -28,7 +29,8 @@ const router = createRouter({
     { path: '/profile', component: Profile },
     { path: '/profile/games', component: Analytics },
     { path: '/users/:id', component: UserProfile },
-    { path: '/admin', component: Admin }
+    { path: '/admin', component: Admin },
+    { path: '/agent', component: Agent }
   ]
 })
 
