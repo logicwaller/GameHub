@@ -61,25 +61,6 @@ func openDatabase() (*sql.DB, error) {
 	return db, nil
 }
 
-func initSchema(db *sql.DB) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY AUTO_INCREMENT, username VARCHAR(24) NOT NULL UNIQUE, email VARCHAR(255) NOT NULL UNIQUE, password VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL DEFAULT 'user', avatar VARCHAR(500) DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS games (id INT PRIMARY KEY AUTO_INCREMENT, title VARCHAR(100) NOT NULL, description TEXT NOT NULL, category VARCHAR(50) NOT NULL, play_time VARCHAR(50) NOT NULL, url VARCHAR(500) NOT NULL, cover LONGTEXT, author_id INT NOT NULL, plays INT NOT NULL DEFAULT 0, likes INT NOT NULL DEFAULT 0, favorites INT NOT NULL DEFAULT 0, comments INT NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_games_author FOREIGN KEY (author_id) REFERENCES users(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS game_favorites (user_id INT NOT NULL, game_id INT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, game_id), CONSTRAINT fk_game_favorites_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, CONSTRAINT fk_game_favorites_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE, INDEX idx_game_favorites_game (game_id), INDEX idx_game_favorites_created (created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS game_likes (user_id INT NOT NULL, game_id INT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, game_id), CONSTRAINT fk_game_likes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, CONSTRAINT fk_game_likes_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE, INDEX idx_game_likes_game (game_id), INDEX idx_game_likes_created (created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS game_comments (id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, game_id INT NOT NULL, user_id INT NULL, author_name VARCHAR(24) NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT fk_game_comments_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE, CONSTRAINT fk_game_comments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL, INDEX idx_game_comments_game_created (game_id, created_at), INDEX idx_game_comments_user (user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS posts (id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, user_id INT NULL, author_name VARCHAR(24) NOT NULL, title VARCHAR(200) NOT NULL, body TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT fk_posts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL, INDEX idx_posts_created (created_at), INDEX idx_posts_user (user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS post_replies (id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, post_id BIGINT UNSIGNED NOT NULL, user_id INT NULL, author_name VARCHAR(24) NOT NULL, content TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, CONSTRAINT fk_post_replies_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE, CONSTRAINT fk_post_replies_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL, INDEX idx_post_replies_post_created (post_id, created_at), INDEX idx_post_replies_user (user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS game_play_events (id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT, game_id INT NOT NULL, user_id INT NULL, played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, CONSTRAINT fk_game_play_events_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE, CONSTRAINT fk_game_play_events_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL, INDEX idx_game_play_events_game_time (game_id, played_at), INDEX idx_game_play_events_user_time (user_id, played_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func registerUser(db *sql.DB, username, email, password string) (user, error) {
 	result, err := db.Exec(`INSERT INTO users (username, email, password) VALUES (?, ?, ?)`, username, email, password)
 	if err != nil {
@@ -106,13 +87,13 @@ func findUserByID(db *sql.DB, id int) (user, error) {
 }
 
 func listGames(db *sql.DB, authorID *int) ([]gameRecord, error) {
-	query := `SELECT g.id, g.title, g.description, g.category, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, plays, likes, favorites, comments FROM games g JOIN users u ON u.id = g.author_id`
+	query := `SELECT g.id, g.title, g.description, g.category, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id`
 	args := []any{}
 	if authorID != nil {
-		query += ` WHERE author_id = ?`
+		query += ` WHERE g.author_id = ?`
 		args = append(args, *authorID)
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY g.created_at DESC`
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -296,4 +277,49 @@ func createGameComment(db *sql.DB, gameID, userID int, author, content string) (
 		return replyRecord{}, err
 	}
 	return replyRecord{ID: id, Text: content, Author: author, AuthorID: author, AuthorAvatar: firstRune(author), CreatedAt: time.Now().Format("2006-01-02 15:04")}, nil
+}
+
+func deleteGame(db *sql.DB, gameID int) error {
+	result, err := db.Exec(`DELETE FROM games WHERE id = ?`, gameID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func deleteGameComment(db *sql.DB, gameID, commentID int64) error {
+	result, err := db.Exec(`DELETE FROM game_comments WHERE id = ? AND game_id = ?`, commentID, gameID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	_, err = db.Exec(`UPDATE games SET comments = GREATEST(0, comments - 1) WHERE id = ?`, gameID)
+	return err
+}
+
+func deletePost(db *sql.DB, postID int64) error {
+	result, err := db.Exec(`DELETE FROM posts WHERE id = ?`, postID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func deletePostReply(db *sql.DB, postID, replyID int64) error {
+	result, err := db.Exec(`DELETE FROM post_replies WHERE id = ? AND post_id = ?`, replyID, postID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }

@@ -3,7 +3,7 @@
     <section class="section page detail">
       <RouterLink to="/games" class="back">← 返回游戏库</RouterLink>
       <div class="detail-layout">
-        <div class="detail-cover" :class="game.color">
+        <div class="detail-cover" :class="game.color" :style="coverStyle(game)">
           <img v-if="game.cover" :src="game.cover" :alt="`${game.title} 封面`">
           <span v-else>{{ game.icon }}</span>
           <small>{{ game.type }}</small>
@@ -43,13 +43,14 @@
           <input v-model="commentText" placeholder="分享你的游戏体验..." required>
           <button class="primary">发表评论</button>
         </form>
-        <article v-for="comment in comments" :key="comment.id" class="comment">
+          <article v-for="comment in comments" :key="comment.id" class="comment">
           <RouterLink :to="`/users/${comment.authorId || comment.author}`" class="avatar-link"><span class="avatar">{{ comment.authorAvatar || comment.author[0] }}</span></RouterLink>
           <div>
             <strong><RouterLink :to="`/users/${comment.authorId || comment.author}`">{{ comment.author }}</RouterLink></strong>
             <small>{{ comment.createdAt }}</small>
             <p>{{ comment.text }}</p>
           </div>
+          <button v-if="isAdmin" class="danger comment-delete" @click="removeComment(comment.id)">删除评论</button>
         </article>
         <p v-if="!comments.length" class="empty">还没有评论，来留下第一条吧。</p>
       </div>
@@ -65,6 +66,9 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   addComment,
+  coverStyle,
+  deleteGameComment,
+  isAdmin,
   loadGameComments,
   state,
   toggleFavorite,
@@ -104,5 +108,11 @@ async function submitComment() {
     }
     commentText.value = ''
   }
+}
+
+async function removeComment(commentId) {
+  if (!game.value || !window.confirm('确定删除这条评论吗？')) return
+  actionError.value = ''
+  try { await deleteGameComment(game.value.id, commentId) } catch (error) { actionError.value = error.message }
 }
 </script>

@@ -1,0 +1,105 @@
+body {
+  position: relative;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: '';
+  opacity: 0.2;
+  background-image:
+    radial-gradient(#8f9895 1px, transparent 1px),
+    radial-gradient(#59615f 1px, transparent 1px);
+  background-position: 0 0, 19px 19px;
+  background-size: 38px 38px;
+}
+
+.app-shell {
+  position: relative;
+  z-index: 1;
+}
+
+.game-cover img,
+.detail-cover img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.game-cover img + small {
+  z-index: 2;
+}
+
+.game-cover::after {
+  display: none;
+}
+
+.game-cover:not(:has(img)) span,
+.detail-cover:not(:has(img)) span {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 82px;
+  height: 82px;
+  place-items: center;
+  border: 1px solid rgb(232 247 146 / 42%);
+  border-radius: var(--cover-shape-radius, 50%);
+  background: var(--cover-subject-background, radial-gradient(circle at 34% 28%, #f4f8b0, #96a650 44%, #35442f 76%));
+  box-shadow: 0 0 34px rgb(197 224 94 / 28%);
+  color: #f2f8aa;
+  font-size: 30px;
+  transform: var(--cover-shape-transform, none);
+}
+
+.game-cover:not(:has(img)) span::before,
+.detail-cover:not(:has(img)) span::before {
+  position: absolute;
+  width: 145px;
+  height: 48px;
+  border: 1px solid rgb(225 241 131 / 42%);
+  border-radius: 50%;
+  content: '';
+  display: var(--cover-ring-display, block);
+  transform: rotate(var(--cover-orbit-angle, -28deg));
+}
+
+.game-cover:not(:has(img)) span::after,
+.detail-cover:not(:has(img)) span::after {
+  position: absolute;
+  width: 116px;
+  height: 116px;
+  border: 1px solid rgb(198 220 117 / 28%);
+  border-radius: 50%;
+  content: '';
+  display: var(--cover-ring-display, block);
+  transform: rotate(calc(var(--cover-orbit-angle, -28deg) + 74deg));
+}
+
+.detail-cover:not(:has(img)) span {
+  width: 178px;
+  height: 178px;
+  font-size: 54px;
+}
+
+.detail-cover:not(:has(img)) span::before {
+  width: 300px;
+  height: 92px;
+}
+
+.detail-cover:not(:has(img)) span::after {
+  width: 240px;
+  height: 240px;
+}
+
+.comment-delete {
+  align-self: center;
+  margin-left: auto;
+}
+
+.admin-section + .admin-section {
+  margin-top: 56px;
+}
