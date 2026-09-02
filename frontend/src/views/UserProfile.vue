@@ -3,5 +3,5 @@
 </template>
 <script setup>
 import { computed } from 'vue'; import { useRoute } from 'vue-router'; import { state } from '../stores'
-const route = useRoute(); const id = computed(() => String(route.params.id)); const profile = computed(() => ({ id: id.value, name: id.value === 'editor' ? 'GameHub 编辑' : id.value, avatar: id.value[0]?.toUpperCase() || '访' })); const published = computed(() => state.games.filter((game) => game.authorId === id.value)); const saved = computed(() => id.value === state.user?.username ? state.games.filter((game) => state.favorites.includes(game.id)) : []); const liked = computed(() => id.value === state.user?.username ? state.games.filter((game) => state.liked.includes(game.id)) : [])
+const route = useRoute(); const id = computed(() => String(route.params.id)); const profile = computed(() => ({ id: id.value, name: id.value === 'editor' ? 'GameHub 编辑' : id.value, avatar: id.value[0]?.toUpperCase() || '访' })); const published = computed(() => state.games.filter((game) => game.author === id.value || String(game.authorId) === id.value)); const saved = computed(() => id.value === state.user?.username ? state.games.filter((game) => state.favorites.includes(game.id)) : []); const liked = computed(() => id.value === state.user?.username ? state.games.filter((game) => state.liked.includes(game.id)) : [])
 </script>

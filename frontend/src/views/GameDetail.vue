@@ -12,7 +12,7 @@
           <p class="eyebrow">FEATURED GAME · {{ game.category }}</p>
           <h1>{{ game.title }}</h1>
           <p class="detail-lead">{{ game.description }}</p>
-          <RouterLink :to="`/users/${game.authorId || 'editor'}`" class="game-author"><span class="avatar">{{ game.authorAvatar || game.author?.[0] || 'G' }}</span><span><small>作者</small><strong>{{ game.author || 'GameHub 编辑' }}</strong></span></RouterLink>
+          <RouterLink :to="`/users/${game.author || game.authorId || 'editor'}`" class="game-author"><span class="avatar">{{ game.authorAvatar || game.author?.[0] || 'G' }}</span><span><small>作者</small><strong>{{ game.author || 'GameHub 编辑' }}</strong></span></RouterLink>
           <div class="detail-meta">
             <span>◷ {{ game.playTime }}</span>
             <span>♙ {{ game.plays.toLocaleString() }} 次浏览</span>
@@ -28,6 +28,7 @@
               开始游玩 <span>↗</span>
             </a>
           </div>
+          <p v-if="actionError" class="error">{{ actionError }}</p>
         </div>
       </div>
 
@@ -64,6 +65,7 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   addComment,
+  loadGameComments,
   state,
   toggleFavorite,
   toggleLike
@@ -75,18 +77,31 @@ const liked = computed(() => game.value && state.liked.includes(game.value.id))
 const favorite = computed(() => game.value && state.favorites.includes(game.value.id))
 const comments = computed(() => (game.value ? state.comments[game.value.id] || [] : []))
 const commentText = ref('')
+const actionError = ref('')
 
-function like() {
-  if (game.value) toggleLike(game.value.id)
+loadGameComments(Number(route.params.id)).catch(() => {})
+
+async function like() {
+  if (!game.value) return
+  actionError.value = ''
+  try { await toggleLike(game.value.id) } catch (error) { actionError.value = error.message }
 }
 
-function fav() {
-  if (game.value) toggleFavorite(game.value.id)
+async function fav() {
+  if (!game.value) return
+  actionError.value = ''
+  try { await toggleFavorite(game.value.id) } catch (error) { actionError.value = error.message }
 }
 
-function submitComment() {
+async function submitComment() {
   if (game.value && commentText.value.trim()) {
-    addComment(game.value.id, commentText.value.trim())
+    actionError.value = ''
+    try {
+      await addComment(game.value.id, commentText.value.trim())
+    } catch (error) {
+      actionError.value = error.message
+      return
+    }
     commentText.value = ''
   }
 }

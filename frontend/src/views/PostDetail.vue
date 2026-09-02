@@ -6,7 +6,7 @@
       <p class="post-meta"><RouterLink :to="`/users/${post.authorId}`" class="avatar-link"><span class="avatar">{{ post.authorAvatar || post.author[0] }}</span></RouterLink><RouterLink :to="`/users/${post.authorId}`">{{ post.author }}</RouterLink> · {{ post.createdAt }}</p>
       <div class="post-content">{{ post.body }}</div>
       <h2>讨论回复 <span class="reply-count">{{ post.comments?.length || 0 }}</span></h2>
-      <form class="comment-form" @submit.prevent="submitReply"><input v-model="replyText" placeholder="写下你的回复..." required><button class="primary">回复</button></form>
+      <form class="comment-form" @submit.prevent="submitReply"><input v-model="replyText" placeholder="写下你的回复..." required><button class="primary" :disabled="submitting">{{ submitting ? '回复中...' : '回复' }}</button></form><p v-if="error" class="error">{{ error }}</p>
       <p v-if="!post.comments?.length" class="empty">还没有回复，来参与讨论吧。</p>
       <article v-for="comment in post.comments" :key="comment.id" class="comment"><RouterLink :to="`/users/${comment.authorId}`" class="avatar-link"><span class="avatar">{{ comment.authorAvatar || comment.author[0] }}</span></RouterLink><div><strong><RouterLink :to="`/users/${comment.authorId}`">{{ comment.author }}</RouterLink></strong><small>{{ comment.createdAt }}</small><p>{{ comment.text }}</p></div></article>
     </div>
@@ -22,5 +22,7 @@ import { addPostReply, state } from '../stores'
 const route = useRoute()
 const post = computed(() => state.posts.find((item) => item.id === Number(route.params.id)))
 const replyText = ref('')
-function submitReply() { if (!post.value || !replyText.value.trim()) return; addPostReply(post.value.id, replyText.value.trim()); replyText.value = '' }
+const submitting = ref(false)
+const error = ref('')
+async function submitReply() { if (!post.value || !replyText.value.trim()) return; submitting.value = true; error.value = ''; try { await addPostReply(post.value.id, replyText.value.trim()); replyText.value = '' } catch (err) { error.value = err.message || '回复失败' } finally { submitting.value = false } }
 </script>

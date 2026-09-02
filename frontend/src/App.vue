@@ -30,7 +30,8 @@
 </template>
 
 <script setup>
-import { state, logout } from './stores'
+import { onMounted } from 'vue'
+import { loadGames, loadPosts, state, logout } from './stores'
 
 const auth = {
   get user() {
@@ -38,4 +39,6 @@ const auth = {
   },
   logout
 }
+
+onMounted(() => { loadGames(); loadPosts() })
 </script>

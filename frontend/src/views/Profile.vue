@@ -19,7 +19,7 @@
     </div>
   </section>
   <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
-    <form class="modal create-form" @submit.prevent="submit"><button type="button" class="modal-close" @click="showCreate = false">×</button><p class="eyebrow">CREATOR STUDIO</p><h2>创建游戏</h2><input v-model="form.title" placeholder="游戏标题" required><textarea v-model="form.description" placeholder="游戏简介" required></textarea><select v-model="form.category" required><option disabled value="">选择分类</option><option>动作</option><option>策略</option><option>休闲</option><option>解谜</option></select><input v-model="form.playTime" placeholder="预计游玩时间" required><input v-model="form.url" type="url" placeholder="网页链接" required><label class="cover-upload">游戏封面<input type="file" accept="image/*" @change="uploadCover"></label><img v-if="form.cover" class="cover-preview" :src="form.cover" alt="游戏封面预览"><button class="primary full">提交游戏 <span>→</span></button></form>
+      <form class="modal create-form" @submit.prevent="submit"><button type="button" class="modal-close" @click="showCreate = false">×</button><p class="eyebrow">CREATOR STUDIO</p><h2>创建游戏</h2><input v-model="form.title" placeholder="游戏标题" required><textarea v-model="form.description" placeholder="游戏简介" required></textarea><select v-model="form.category" required><option disabled value="">选择分类</option><option>动作</option><option>策略</option><option>休闲</option><option>解谜</option></select><input v-model="form.playTime" placeholder="预计游玩时间" required><input v-model="form.url" type="url" placeholder="网页链接" required><label class="cover-upload">游戏封面<input type="file" accept="image/*" @change="uploadCover"></label><img v-if="form.cover" class="cover-preview" :src="form.cover" alt="游戏封面预览"><p v-if="error" class="error">{{ error }}</p><button class="primary full" :disabled="submitting">{{ submitting ? '提交中...' : '提交游戏' }} <span>→</span></button></form>
   </div>
 </template>
 
@@ -29,7 +29,9 @@ import { addGame, isAdmin, state } from '../stores'
 const favorites = computed(() => state.games.filter((game) => state.favorites.includes(game.id)))
 const likedGames = computed(() => state.games.filter((game) => state.liked.includes(game.id)))
 const showCreate = ref(false)
+const submitting = ref(false)
+const error = ref('')
 const form = reactive({ title: '', description: '', category: '', playTime: '', url: '', cover: '' })
 function uploadCover(event) { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { form.cover = reader.result }; reader.readAsDataURL(file) }
-function submit() { addGame(form); Object.assign(form, { title: '', description: '', category: '', playTime: '', url: '', cover: '' }); showCreate.value = false }
+async function submit() { submitting.value = true; error.value = ''; try { await addGame(form); Object.assign(form, { title: '', description: '', category: '', playTime: '', url: '', cover: '' }); showCreate.value = false } catch (err) { error.value = err.message || '创建游戏失败' } finally { submitting.value = false } }
 </script>
