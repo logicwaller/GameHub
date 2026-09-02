@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -87,15 +88,30 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
+func adminMiddleware(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		username, exists := c.Get("username")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "请先登录"})
+			c.Abort()
+			return
+		}
+		u, _, err := findUser(db, username.(string))
+		if err != nil || u.Role != "admin" {
+			c.JSON(http.StatusForbidden, gin.H{"message": "需要管理员权限"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 func main() {
 	db, err := openDatabase()
 	if err != nil {
 		panic("MySQL 连接失败: " + err.Error())
 	}
 	defer db.Close()
-	if err := initSchema(db); err != nil {
-		panic("初始化数据库表失败: " + err.Error())
-	}
 
 	r := gin.Default()
 	r.Use(func(c *gin.Context) {
@@ -118,6 +134,7 @@ func main() {
 	r.GET("/api/games", func(c *gin.Context) {
 		items, err := listGames(db, nil)
 		if err != nil {
+			log.Printf("GET /api/games query failed: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取游戏失败"})
 			return
 		}
@@ -310,6 +327,69 @@ func main() {
 			return
 		}
 		c.JSON(http.StatusCreated, gin.H{"comment": comment})
+	})
+	admin := r.Group("/api/admin", authMiddleware(), adminMiddleware(db))
+	admin.DELETE("/games/:id", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
+			return
+		}
+		if err := deleteGame(db, id); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "游戏不存在"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除游戏失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	admin.DELETE("/games/:id/comments/:commentID", func(c *gin.Context) {
+		gameID, err1 := strconv.ParseInt(c.Param("id"), 10, 64)
+		commentID, err2 := strconv.ParseInt(c.Param("commentID"), 10, 64)
+		if err1 != nil || err2 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "评论 ID 无效"})
+			return
+		}
+		if err := deleteGameComment(db, gameID, commentID); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "评论不存在"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除评论失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	admin.DELETE("/posts/:id", func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "帖子 ID 无效"})
+			return
+		}
+		if err := deletePost(db, id); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "帖子不存在"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除帖子失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	admin.DELETE("/posts/:id/replies/:replyID", func(c *gin.Context) {
+		postID, err1 := strconv.ParseInt(c.Param("id"), 10, 64)
+		replyID, err2 := strconv.ParseInt(c.Param("replyID"), 10, 64)
+		if err1 != nil || err2 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "回复 ID 无效"})
+			return
+		}
+		if err := deletePostReply(db, postID, replyID); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "回复不存在"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除回复失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
 	})
 	secured.POST("/games", func(c *gin.Context) {
 		var input gameRecord

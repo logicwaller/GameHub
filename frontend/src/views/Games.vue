@@ -1,16 +1,10 @@
 <template>
   <section class="section page">
-    <div class="section-head">
-      <div><p class="eyebrow">EXPLORE THE COLLECTION</p><h1>发现游戏</h1></div>
-      <div class="search"><span>⌕</span><input v-model="query" placeholder="搜索游戏..." aria-label="搜索游戏"></div>
-    </div>
-    <div class="toolbar">
-      <div class="filters"><button v-for="item in categories" :key="item" :class="{ active: category === item }" @click="category = item">{{ item }}</button></div>
-      <select v-model="sort" aria-label="排序方式"><option value="plays">浏览次数</option><option value="likes">点赞数</option></select>
-    </div>
+    <div class="section-head"><div><p class="eyebrow">EXPLORE THE COLLECTION</p><h1>发现游戏</h1></div><div class="search"><span>⌕</span><input v-model="query" placeholder="搜索游戏..." aria-label="搜索游戏"></div></div>
+    <div class="toolbar"><div class="filters"><button v-for="item in categories" :key="item" :class="{ active: category === item }" @click="category = item">{{ item }}</button></div><select v-model="sort" aria-label="排序方式"><option value="plays">浏览次数</option><option value="likes">点赞数</option></select></div>
     <div class="game-grid">
       <RouterLink v-for="game in filtered" :key="game.id" :to="`/games/${game.id}`" class="game-card">
-        <div class="game-cover" :class="game.color"><img v-if="game.cover" :src="game.cover" :alt="`${game.title} 封面`"><span v-else>{{ game.icon }}</span><small>{{ game.type }}</small></div>
+        <div class="game-cover" :class="game.color" :style="coverStyle(game)"><img v-if="game.cover" :src="game.cover" :alt="`${game.title} 封面`"><span v-else>{{ game.icon }}</span><small>{{ game.type }}</small></div>
         <div class="game-info"><h3>{{ game.title }}</h3><p>{{ game.description }}</p><div><span class="tag">{{ game.category }}</span><span class="play-count">{{ format(game[sort]) }} {{ sort === 'plays' ? '次浏览' : '个赞' }}</span></div></div>
       </RouterLink>
     </div>
@@ -20,7 +14,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { state } from '../stores'
+import { coverStyle, state } from '../stores'
 
 const query = ref('')
 const category = ref('全部')

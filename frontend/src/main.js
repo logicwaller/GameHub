@@ -14,6 +14,7 @@ import PostDetail from './views/PostDetail.vue'
 import Analytics from './views/Analytics.vue'
 import Agent from './views/Agent.vue'
 import './style.css'
+import './decorations.css'
 
 const router = createRouter({
   history: createWebHistory(),
