@@ -11,6 +11,7 @@ function load(key, fallback) {
 export const state = reactive({
   user: load('gamehub_user', null),
   games: [],
+  hotGames: [],
   favorites: load('gamehub_favorites', []),
   liked: load('gamehub_liked', []),
   comments: {},
@@ -69,9 +70,14 @@ async function postAuth(path, body, method = 'POST') {
   return data
 }
 
-export async function loadGames() {
+export async function loadGames(options = {}) {
   try {
-    const response = await fetch('/api/games')
+    const params = new URLSearchParams()
+    if (options.q) params.set('q', options.q)
+    if (options.sort) params.set('sort', options.sort)
+    if (options.category && options.category !== '全部') params.set('category', options.category)
+    const query = params.toString()
+    const response = await fetch(`/api/games${query ? `?${query}` : ''}`)
     if (!response.ok) throw new Error('游戏接口不可用')
     const data = await response.json()
     state.games.splice(0, state.games.length, ...(data.items || []))
@@ -88,6 +94,17 @@ export async function loadPosts() {
     state.posts.splice(0, state.posts.length, ...(data.items || []))
   } catch {
     state.posts.splice(0, state.posts.length)
+  }
+}
+
+export async function loadHotGames() {
+  try {
+    const response = await fetch('/api/games/hot')
+    if (!response.ok) throw new Error('热门游戏接口不可用')
+    const data = await response.json()
+    state.hotGames.splice(0, state.hotGames.length, ...(data.items || []))
+  } catch {
+    state.hotGames.splice(0, state.hotGames.length)
   }
 }
 
@@ -143,6 +160,17 @@ export async function addGame(game) {
   const data = await postAuth('/api/games', game)
   state.games.unshift(data.game)
   return data.game
+}
+
+export async function recordGamePlay(id) {
+  const response = await fetch(`/api/games/${id}/play`, { method: 'POST' })
+  const data = response.status === 204 ? {} : await response.json()
+  if (!response.ok && response.status !== 202) {
+    throw new Error(data.message || '记录游玩失败')
+  }
+  const game = state.games.find((item) => item.id === id)
+  if (game && Number.isFinite(data.plays)) game.plays = data.plays
+  return data
 }
 
 export async function deleteGame(id) {

@@ -103,3 +103,10 @@ body::before {
 .admin-section + .admin-section {
   margin-top: 56px;
 }
+
+mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: rgb(212 243 74 / 22%);
+  color: #d4f34a;
+}

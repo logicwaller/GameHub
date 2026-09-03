@@ -6,14 +6,17 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -107,17 +110,36 @@ func adminMiddleware(db *sql.DB) gin.HandlerFunc {
 }
 
 func main() {
+	// 获取env，默认使用同一目录下的.env文件
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	// 启动MySQL!!!!!
 	db, err := openDatabase()
 	if err != nil {
 		panic("MySQL 连接失败: " + err.Error())
 	}
 	defer db.Close()
 
+	// 启动redis
+	cache := newRedisClient()
+
+	// 启动kafaka
+	startGamePlayConsumer(db, cache)
+	if games, err := listGames(db, nil); err == nil {
+		for _, game := range games {
+			cache.zadd("game:hot:rank", game.Plays, strconv.Itoa(game.ID))
+		}
+	}
+
 	r := gin.Default()
+	r.Use(rateLimit(cache))
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "http://localhost:5173")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
@@ -129,16 +151,128 @@ func main() {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "database": "mysql"})
+		redisStatus := "ok"
+		if _, err := cache.command("PING"); err != nil {
+			redisStatus = "unavailable"
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "database": "mysql", "redis": redisStatus})
 	})
 	r.GET("/api/games", func(c *gin.Context) {
+		query := strings.TrimSpace(c.Query("q"))
+		category := strings.TrimSpace(c.Query("category"))
+		sortBy := c.DefaultQuery("sort", "plays")
+		cacheKey := "games:list:" + query + ":" + category + ":" + sortBy
+		var cached []gameRecord
+		if query == "" && category == "" && (sortBy == "plays" || sortBy == "likes") && cache.getJSON(cacheKey, &cached) {
+			c.JSON(http.StatusOK, gin.H{"items": cached, "cached": true})
+			return
+		}
 		items, err := listGames(db, nil)
 		if err != nil {
 			log.Printf("GET /api/games query failed: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取游戏失败"})
 			return
 		}
+		if query != "" {
+			filtered := items[:0]
+			for _, item := range items {
+				if strings.Contains(strings.ToLower(item.Title), strings.ToLower(query)) || strings.Contains(strings.ToLower(item.Description), strings.ToLower(query)) {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
+		}
+		if category != "" && category != "全部" {
+			filtered := items[:0]
+			for _, item := range items {
+				if item.Category == category {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
+		}
+		sort.SliceStable(items, func(i, j int) bool {
+			if sortBy == "likes" {
+				return items[i].Likes > items[j].Likes
+			}
+			return items[i].Plays > items[j].Plays
+		})
+		if query == "" && category == "" && (sortBy == "plays" || sortBy == "likes") {
+			cache.setJSON(cacheKey, items, 10*time.Minute)
+		}
 		c.JSON(http.StatusOK, gin.H{"items": items})
+	})
+	r.GET("/api/games/:id", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
+			return
+		}
+		cacheKey := fmt.Sprintf("game:detail:%d", id)
+		var cached gameRecord
+		if cache.getJSON(cacheKey, &cached) {
+			c.JSON(http.StatusOK, gin.H{"game": cached, "cached": true})
+			return
+		}
+		item, err := findGame(db, id)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "游戏不存在"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取游戏失败"})
+			return
+		}
+		cache.setJSON(cacheKey, item, time.Hour)
+		c.JSON(http.StatusOK, gin.H{"game": item})
+	})
+	r.GET("/api/games/hot", func(c *gin.Context) {
+		ids := cache.zrange("game:hot:rank", 20)
+		items := make([]gameRecord, 0, len(ids))
+		for _, value := range ids {
+			id, err := strconv.Atoi(value)
+			if err != nil {
+				continue
+			}
+			item, err := findGame(db, id)
+			if err == nil {
+				items = append(items, item)
+			}
+		}
+		if len(items) == 0 {
+			items, _ = listGames(db, nil)
+			if len(items) > 20 {
+				items = items[:20]
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"items": items})
+	})
+	r.POST("/api/games/:id/play", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
+			return
+		}
+		if _, err := findGame(db, id); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "游戏不存在"})
+			return
+		}
+		if err := publishGamePlay(id); err != nil {
+			log.Printf("Kafka 不可用，回退为同步记录游玩量: %v", err)
+			_, _ = db.Exec(`INSERT INTO game_play_events (game_id) VALUES (?)`, id)
+			if _, err := db.Exec(`UPDATE games SET plays = plays + 1 WHERE id = ?`, id); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "记录游玩失败"})
+				return
+			}
+		}
+		item, _ := findGame(db, id)
+		if item.Plays > 0 {
+			cache.zadd("game:hot:rank", item.Plays, strconv.Itoa(id))
+		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
+		c.JSON(http.StatusAccepted, gin.H{"plays": item.Plays, "queued": true})
 	})
 	r.GET("/api/games/:id/comments", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
@@ -268,6 +402,9 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "更新点赞数失败"})
 			return
 		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
 		c.JSON(http.StatusOK, gin.H{"liked": liked})
 	})
 	secured.POST("/games/:id/favorite", func(c *gin.Context) {
@@ -296,6 +433,9 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "更新收藏数失败"})
 			return
 		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
 		c.JSON(http.StatusOK, gin.H{"favorite": favorite})
 	})
 	secured.POST("/games/:id/comments", func(c *gin.Context) {
@@ -326,6 +466,9 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "更新评论数失败"})
 			return
 		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
 		c.JSON(http.StatusCreated, gin.H{"comment": comment})
 	})
 	admin := r.Group("/api/admin", authMiddleware(), adminMiddleware(db))
@@ -342,6 +485,9 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除游戏失败"})
 			return
 		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
 		c.Status(http.StatusNoContent)
 	})
 	admin.DELETE("/games/:id/comments/:commentID", func(c *gin.Context) {
@@ -358,6 +504,9 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除评论失败"})
 			return
 		}
+		cache.del(fmt.Sprintf("game:detail:%d", gameID))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
 		c.Status(http.StatusNoContent)
 	})
 	admin.DELETE("/posts/:id", func(c *gin.Context) {
@@ -409,6 +558,8 @@ func main() {
 			return
 		}
 		input.Author = u.Username
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
 		c.JSON(http.StatusCreated, gin.H{"game": input})
 	})
 	secured.POST("/posts", func(c *gin.Context) {

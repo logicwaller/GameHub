@@ -8,8 +8,8 @@
       <nav>
         <RouterLink to="/">首页</RouterLink>
         <RouterLink to="/games">发现游戏</RouterLink>
-        <RouterLink to="/agent">AI攻略</RouterLink>
         <RouterLink to="/forum">论坛</RouterLink>
+        <RouterLink to="/agent">AI攻略</RouterLink>
       </nav>
       <div class="account">
         <template v-if="auth.user">
@@ -32,7 +32,7 @@
 
 <script setup>
 import { onMounted } from 'vue'
-import { loadGames, loadPosts, state, logout } from './stores'
+import { loadGames, loadHotGames, loadPosts, state, logout } from './stores'
 
 const auth = {
   get user() {
@@ -41,5 +41,9 @@ const auth = {
   logout
 }
 
-onMounted(() => { loadGames(); loadPosts() })
+onMounted(() => {
+  loadGames()
+  loadHotGames()
+  loadPosts()
+})
 </script>
