@@ -24,7 +24,7 @@
             <button class="action-button" :class="{ active: favorite }" @click="fav">
               <span>★</span>{{ favorite ? '已收藏' : '收藏' }}
             </button>
-            <a class="primary play" :href="game.url" target="_blank" rel="noreferrer">
+            <a class="primary play" :href="game.url" target="_blank" rel="noreferrer" @click="recordPlay">
               开始游玩 <span>↗</span>
             </a>
           </div>
@@ -70,6 +70,7 @@ import {
   deleteGameComment,
   isAdmin,
   loadGameComments,
+  recordGamePlay,
   state,
   toggleFavorite,
   toggleLike
@@ -95,6 +96,10 @@ async function fav() {
   if (!game.value) return
   actionError.value = ''
   try { await toggleFavorite(game.value.id) } catch (error) { actionError.value = error.message }
+}
+
+function recordPlay() {
+  if (game.value) recordGamePlay(game.value.id).catch(() => {})
 }
 
 async function submitComment() {

@@ -24,6 +24,6 @@
 import { computed } from 'vue'
 import { coverStyle, state } from '../stores'
 
-const featured = computed(() => state.games.slice(0, 3))
+const featured = computed(() => (state.hotGames.length ? state.hotGames : state.games).slice(0, 3))
 const format = (value) => value > 999 ? `${(value / 1000).toFixed(1)}k` : value
 </script>

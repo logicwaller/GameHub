@@ -110,6 +110,13 @@ func listGames(db *sql.DB, authorID *int) ([]gameRecord, error) {
 	return items, rows.Err()
 }
 
+func findGame(db *sql.DB, id int) (gameRecord, error) {
+	var item gameRecord
+	err := db.QueryRow(`SELECT g.id, g.title, g.description, g.category, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id WHERE g.id = ?`, id).
+		Scan(&item.ID, &item.Title, &item.Description, &item.Category, &item.PlayTime, &item.URL, &item.Cover, &item.AuthorID, &item.Author, &item.Plays, &item.Likes, &item.Favorites, &item.Comments)
+	return item, err
+}
+
 func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) {
 	result, err := db.Exec(`INSERT INTO games (title, description, category, play_time, url, cover, author_id) VALUES (?, ?, ?, ?, ?, ?, ?)`, input.Title, input.Description, input.Category, input.PlayTime, input.URL, input.Cover, authorID)
 	if err != nil {
