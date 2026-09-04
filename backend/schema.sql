@@ -119,3 +119,52 @@ CREATE TABLE IF NOT EXISTS game_play_events (
   INDEX idx_game_play_events_game_time (game_id, played_at),
   INDEX idx_game_play_events_user_time (user_id, played_at)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS kafka_processed_events (
+  event_id VARCHAR(64) PRIMARY KEY,
+  topic VARCHAR(120) NOT NULL,
+  processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS search_documents (
+  entity_type VARCHAR(32) NOT NULL,
+  entity_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  content TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (entity_type, entity_id),
+  FULLTEXT KEY idx_search_documents_text (title, content)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS moderation_records (
+  entity_type VARCHAR(32) NOT NULL,
+  entity_id BIGINT UNSIGNED NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  reason VARCHAR(255) NOT NULL DEFAULT '',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (entity_type, entity_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  type VARCHAR(40) NOT NULL,
+  content VARCHAR(500) NOT NULL,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_notifications_user_created (user_id, created_at),
+  CONSTRAINT fk_notifications_user
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS game_analytics_daily (
+  game_id INT NOT NULL,
+  stat_date DATE NOT NULL,
+  plays INT NOT NULL DEFAULT 0,
+  likes INT NOT NULL DEFAULT 0,
+  favorites INT NOT NULL DEFAULT 0,
+  comments INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (game_id, stat_date),
+  CONSTRAINT fk_game_analytics_daily_game
+    FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;

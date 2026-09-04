@@ -79,12 +79,16 @@ REDIS_PASSWORD=
 REDIS_DB=0
 KAFKA_BROKERS=127.0.0.1:9092
 KAFKA_GAME_PLAY_TOPIC=game.play
+KAFKA_SEARCH_TOPIC=search.sync
+KAFKA_INTERACTION_TOPIC=interaction.event
+KAFKA_COMMENT_TOPIC=comment.moderation
+KAFKA_NOTIFICATION_TOPIC=notification
 ```
 
-Create the Kafka topic once after the broker starts:
+The development Compose configuration enables automatic topic creation. The backend also ensures the business topics and their `.dlq` dead-letter topics exist at startup. Restart Kafka once after pulling the updated configuration:
 
 ```powershell
-docker exec gamehub-kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --topic game.play --bootstrap-server localhost:9092
+docker compose up -d --force-recreate kafka
 ```
 
 Phase-three endpoints:
@@ -94,5 +98,13 @@ Phase-three endpoints:
 - `GET /api/games/hot` returns the Redis hot-game ranking.
 - `POST /api/games/:id/play` publishes a `game.play` event; the Kafka consumer asynchronously increments play count and updates the ranking. If Kafka is unavailable, the API automatically falls back to synchronous MySQL update.
 - Requests are limited to 120 per IP per minute when Redis is available.
+
+Additional phase-three behaviour:
+
+- The backend creates phase-three tables automatically: processed Kafka events, search documents, moderation records, notifications and daily game analytics.
+- Kafka consumers update the local search-document index, record comment moderation results, store notifications and aggregate interaction metrics by day.
+- `POST /api/auth/logout` blacklists the current JWT in Redis; login/register endpoints have a stricter 10-per-minute IP limit.
+- Authenticated write requests may provide an `Idempotency-Key` header to reject accidental retries for two minutes.
+- `GET /api/me/relations`, `GET /api/notifications` and `GET /api/games/analytics?days=7&game_id={id}` provide cached interaction state, notifications and real daily analytics data.
 
 Redis failures fail open, so MySQL-backed pages continue to work. Kafka is connected directly through the Go client; the backend does not need access to the Docker CLI. The broker only needs to be reachable at `KAFKA_BROKERS`.

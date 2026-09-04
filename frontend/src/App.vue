@@ -32,7 +32,7 @@
 
 <script setup>
 import { onMounted } from 'vue'
-import { loadGames, loadHotGames, loadPosts, state, logout } from './stores'
+import { loadGames, loadHotGames, loadPosts, loadRelations, state, logout } from './stores'
 
 const auth = {
   get user() {
@@ -45,5 +45,6 @@ onMounted(() => {
   loadGames()
   loadHotGames()
   loadPosts()
+  loadRelations()
 })
 </script>

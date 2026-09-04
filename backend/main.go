@@ -63,9 +63,10 @@ func tokenFor(u user, lifetime time.Duration) string {
 	return input + "." + enc.EncodeToString(h.Sum(nil))
 }
 
-func authMiddleware() gin.HandlerFunc {
+func authMiddleware(cache *redisClient) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		parts := strings.SplitN(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "), ".", 3)
+		rawToken := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		parts := strings.SplitN(rawToken, ".", 3)
 		if len(parts) != 3 {
 			c.JSON(http.StatusUnauthorized, gin.H{"message": "请先登录"})
 			c.Abort()
@@ -86,7 +87,46 @@ func authMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(rawToken)))
+		if revoked, err := cache.command("EXISTS", "auth:blacklist:"+tokenHash); err == nil && revoked == int64(1) {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "登录已退出，请重新登录"})
+			c.Abort()
+			return
+		}
 		c.Set("username", payload.Username)
+		c.Set("token", rawToken)
+		c.Set("token_exp", payload.Exp)
+		c.Next()
+	}
+}
+
+func authRateLimit(cache *redisClient) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if count, err := cache.increment("auth:limit:"+c.ClientIP(), time.Minute); err == nil && count > 10 {
+			c.JSON(http.StatusTooManyRequests, gin.H{"message": "登录或注册请求过于频繁，请稍后再试"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func idempotency(cache *redisClient) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method != http.MethodPost {
+			c.Next()
+			return
+		}
+		key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		if key == "" {
+			c.Next()
+			return
+		}
+		if len(key) > 120 || !cache.setWithTTL("idempotency:"+c.ClientIP()+":"+key, "1", 2*time.Minute) {
+			c.JSON(http.StatusConflict, gin.H{"message": "请勿重复提交请求"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }
@@ -109,6 +149,46 @@ func adminMiddleware(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func emitEvent(envKey, fallbackTopic, key string, payload any) {
+	topic := os.Getenv(envKey)
+	if topic == "" {
+		topic = fallbackTopic
+	}
+	eventType := fallbackTopic
+	if value, ok := payload.(map[string]any); ok {
+		if kind, exists := value["type"].(string); exists && kind != "" {
+			eventType = kind
+		}
+	}
+	go func() {
+		if err := publishEvent(topic, key, eventType, payload); err != nil {
+			log.Printf("Kafka 事件发送失败(%s): %v", topic, err)
+		}
+	}()
+}
+
+func cachedRelations(db *sql.DB, cache *redisClient, userID int, table, keyPrefix string) ([]int, error) {
+	key := keyPrefix + strconv.Itoa(userID)
+	values, err := cache.setMembers(key)
+	if err == nil && len(values) > 0 {
+		items := make([]int, 0, len(values))
+		for _, value := range values {
+			if id, err := strconv.Atoi(value); err == nil {
+				items = append(items, id)
+			}
+		}
+		return items, nil
+	}
+	items, err := userGameRelations(db, table, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range items {
+		cache.setAdd(key, strconv.Itoa(id))
+	}
+	return items, nil
+}
+
 func main() {
 	// 获取env，默认使用同一目录下的.env文件
 	err := godotenv.Load()
@@ -127,15 +207,25 @@ func main() {
 	cache := newRedisClient()
 
 	// 启动kafaka
+	if err := ensureKafkaTopics(); err != nil {
+		log.Printf("Kafka 主题初始化失败: %v", err)
+	}
 	startGamePlayConsumer(db, cache)
+	startPhaseThreeConsumers(db)
 	if games, err := listGames(db, nil); err == nil {
 		for _, game := range games {
 			cache.zadd("game:hot:rank", game.Plays, strconv.Itoa(game.ID))
+			cache.zadd("game:fav:rank", game.Favorites, strconv.Itoa(game.ID))
+			cache.hset(fmt.Sprintf("game:stats:%d", game.ID), "plays", game.Plays)
+			cache.hset(fmt.Sprintf("game:stats:%d", game.ID), "likes", game.Likes)
+			cache.hset(fmt.Sprintf("game:stats:%d", game.ID), "favorites", game.Favorites)
+			cache.hset(fmt.Sprintf("game:stats:%d", game.ID), "comments", game.Comments)
 		}
 	}
 
 	r := gin.Default()
 	r.Use(rateLimit(cache))
+	r.Use(idempotency(cache))
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "http://localhost:5173")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -272,6 +362,7 @@ func main() {
 		cache.del(fmt.Sprintf("game:detail:%d", id))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		cache.hset(fmt.Sprintf("game:stats:%d", id), "likes", itemCounter(db, id, "likes"))
 		c.JSON(http.StatusAccepted, gin.H{"plays": item.Plays, "queued": true})
 	})
 	r.GET("/api/games/:id/comments", func(c *gin.Context) {
@@ -280,7 +371,14 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
 			return
 		}
-		comments, err := gameComments(db, id)
+		cacheKey := fmt.Sprintf("game:comments:%d", id)
+		var comments []replyRecord
+		if !cache.getJSON(cacheKey, &comments) {
+			comments, err = gameComments(db, id)
+			if err == nil {
+				cache.setJSON(cacheKey, comments, 2*time.Minute)
+			}
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取评论失败"})
 			return
@@ -288,10 +386,17 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"items": comments})
 	})
 	r.GET("/api/posts", func(c *gin.Context) {
-		posts, err := listPosts(db)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取论坛失败"})
-			return
+		var posts []postRecord
+		if !cache.getJSON("forum:latest", &posts) {
+			var err error
+			posts, err = listPosts(db)
+			if err == nil {
+				cache.setJSON("forum:latest", posts, 2*time.Minute)
+			}
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "读取论坛失败"})
+				return
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"items": posts})
 	})
@@ -301,7 +406,14 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "帖子 ID 无效"})
 			return
 		}
-		post, err := findPost(db, id)
+		cacheKey := fmt.Sprintf("post:detail:%d", id)
+		var post postRecord
+		if !cache.getJSON(cacheKey, &post) {
+			post, err = findPost(db, id)
+			if err == nil {
+				cache.setJSON(cacheKey, post, 2*time.Minute)
+			}
+		}
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"message": "帖子不存在"})
 			return
@@ -313,7 +425,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"post": post})
 	})
 
-	r.POST("/api/auth/register", func(c *gin.Context) {
+	r.POST("/api/auth/register", authRateLimit(cache), func(c *gin.Context) {
 		var input struct {
 			Username string `json:"username" binding:"required,min=2,max=24"`
 			Email    string `json:"email" binding:"required,email"`
@@ -333,9 +445,10 @@ func main() {
 			c.JSON(http.StatusConflict, gin.H{"message": "用户名或邮箱已存在"})
 			return
 		}
+		emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(u.ID), map[string]any{"type": "welcome", "user_id": u.ID, "content": "欢迎加入 GameHub，开始探索你的下一场冒险。"})
 		c.JSON(http.StatusCreated, gin.H{"user": u, "token": tokenFor(u, 2*time.Hour), "refresh_token": tokenFor(u, 7*24*time.Hour)})
 	})
-	r.POST("/api/auth/login", func(c *gin.Context) {
+	r.POST("/api/auth/login", authRateLimit(cache), func(c *gin.Context) {
 		var input struct {
 			Username string `json:"username" binding:"required"`
 			Password string `json:"password" binding:"required"`
@@ -352,7 +465,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"user": u, "token": tokenFor(u, 2*time.Hour), "refresh_token": tokenFor(u, 7*24*time.Hour)})
 	})
 
-	secured := r.Group("/api", authMiddleware())
+	secured := r.Group("/api", authMiddleware(cache))
 	secured.GET("/me", func(c *gin.Context) {
 		username, _ := c.Get("username")
 		u, _, err := findUser(db, username.(string))
@@ -361,6 +474,35 @@ func main() {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"user": u})
+	})
+	secured.GET("/me/relations", func(c *gin.Context) {
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		likes, err := cachedRelations(db, cache, u.ID, "game_likes", "user:like:")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取点赞状态失败"})
+			return
+		}
+		favorites, err := cachedRelations(db, cache, u.ID, "game_favorites", "user:fav:")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取收藏状态失败"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"liked": likes, "favorites": favorites})
+	})
+	secured.POST("/auth/logout", func(c *gin.Context) {
+		rawToken, _ := c.Get("token")
+		expiresAt, _ := c.Get("token_exp")
+		ttl := time.Until(time.Unix(expiresAt.(int64), 0))
+		if ttl > 0 {
+			tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(rawToken.(string))))
+			_, _ = cache.command("SET", "auth:blacklist:"+tokenHash, "1", "EX", strconv.Itoa(int(ttl.Seconds())))
+		}
+		c.Status(http.StatusNoContent)
 	})
 	secured.GET("/games/analytics", func(c *gin.Context) {
 		username, _ := c.Get("username")
@@ -372,6 +514,38 @@ func main() {
 		items, err := listGames(db, &u.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取数据失败"})
+			return
+		}
+		days := 7
+		if value, err := strconv.Atoi(c.DefaultQuery("days", "7")); err == nil && value >= 1 && value <= 90 {
+			days = value
+		}
+		var gameID *int
+		if value := c.Query("game_id"); value != "" {
+			id, err := strconv.Atoi(value)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
+				return
+			}
+			gameID = &id
+		}
+		trend, err := gameDailyAnalytics(db, u.ID, gameID, days)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取趋势数据失败"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": items, "trend": trend})
+	})
+	secured.GET("/notifications", func(c *gin.Context) {
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		items, err := userNotifications(db, u.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取通知失败"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"items": items})
@@ -405,6 +579,13 @@ func main() {
 		cache.del(fmt.Sprintf("game:detail:%d", id))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		cache.hset(fmt.Sprintf("game:stats:%d", id), "likes", itemCounter(db, id, "likes"))
+		if liked {
+			cache.setAdd("user:like:"+strconv.Itoa(u.ID), strconv.Itoa(id))
+		} else {
+			cache.setRemove("user:like:"+strconv.Itoa(u.ID), strconv.Itoa(id))
+		}
+		emitEvent("KAFKA_INTERACTION_TOPIC", "interaction.event", strconv.Itoa(id), map[string]any{"type": "like", "game_id": id, "user_id": u.ID, "liked": liked})
 		c.JSON(http.StatusOK, gin.H{"liked": liked})
 	})
 	secured.POST("/games/:id/favorite", func(c *gin.Context) {
@@ -436,6 +617,15 @@ func main() {
 		cache.del(fmt.Sprintf("game:detail:%d", id))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		favorites := itemCounter(db, id, "favorites")
+		cache.hset(fmt.Sprintf("game:stats:%d", id), "favorites", favorites)
+		cache.zadd("game:fav:rank", favorites, strconv.Itoa(id))
+		if favorite {
+			cache.setAdd("user:fav:"+strconv.Itoa(u.ID), strconv.Itoa(id))
+		} else {
+			cache.setRemove("user:fav:"+strconv.Itoa(u.ID), strconv.Itoa(id))
+		}
+		emitEvent("KAFKA_INTERACTION_TOPIC", "interaction.event", strconv.Itoa(id), map[string]any{"type": "favorite", "game_id": id, "user_id": u.ID, "favorite": favorite})
 		c.JSON(http.StatusOK, gin.H{"favorite": favorite})
 	})
 	secured.POST("/games/:id/comments", func(c *gin.Context) {
@@ -467,11 +657,18 @@ func main() {
 			return
 		}
 		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del(fmt.Sprintf("game:comments:%d", id))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		cache.hset(fmt.Sprintf("game:stats:%d", id), "comments", itemCounter(db, id, "comments"))
+		emitEvent("KAFKA_COMMENT_TOPIC", "comment.moderation", strconv.Itoa(id), map[string]any{"type": "game_comment", "game_id": id, "comment_id": comment.ID})
+		emitEvent("KAFKA_INTERACTION_TOPIC", "interaction.event", strconv.Itoa(id), map[string]any{"type": "comment", "game_id": id, "user_id": u.ID})
+		if game, err := findGame(db, id); err == nil && game.AuthorID != u.ID {
+			emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(game.AuthorID), map[string]any{"type": "game_comment", "user_id": game.AuthorID, "content": u.Username + " 评论了你的游戏《" + game.Title + "》。"})
+		}
 		c.JSON(http.StatusCreated, gin.H{"comment": comment})
 	})
-	admin := r.Group("/api/admin", authMiddleware(), adminMiddleware(db))
+	admin := r.Group("/api/admin", authMiddleware(cache), adminMiddleware(db))
 	admin.DELETE("/games/:id", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
@@ -522,6 +719,8 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除帖子失败"})
 			return
 		}
+		cache.del("forum:latest")
+		cache.del(fmt.Sprintf("post:detail:%d", id))
 		c.Status(http.StatusNoContent)
 	})
 	admin.DELETE("/posts/:id/replies/:replyID", func(c *gin.Context) {
@@ -538,6 +737,8 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除回复失败"})
 			return
 		}
+		cache.del("forum:latest")
+		cache.del(fmt.Sprintf("post:detail:%d", postID))
 		c.Status(http.StatusNoContent)
 	})
 	secured.POST("/games", func(c *gin.Context) {
@@ -560,6 +761,7 @@ func main() {
 		input.Author = u.Username
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		emitEvent("KAFKA_SEARCH_TOPIC", "search.sync", strconv.Itoa(input.ID), map[string]any{"type": "game.created", "game_id": input.ID})
 		c.JSON(http.StatusCreated, gin.H{"game": input})
 	})
 	secured.POST("/posts", func(c *gin.Context) {
@@ -582,6 +784,8 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "发布帖子失败"})
 			return
 		}
+		cache.del("forum:latest")
+		emitEvent("KAFKA_SEARCH_TOPIC", "search.sync", strconv.FormatInt(post.ID, 10), map[string]any{"type": "post.created", "post_id": post.ID})
 		c.JSON(http.StatusCreated, gin.H{"post": post})
 	})
 	secured.POST("/posts/:id/replies", func(c *gin.Context) {
@@ -611,6 +815,12 @@ func main() {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "回复失败"})
 			return
+		}
+		cache.del("forum:latest")
+		cache.del(fmt.Sprintf("post:detail:%d", id))
+		emitEvent("KAFKA_COMMENT_TOPIC", "comment.moderation", strconv.FormatInt(id, 10), map[string]any{"type": "post_reply", "post_id": id})
+		if ownerID, err := postAuthorID(db, id); err == nil && ownerID != 0 && ownerID != u.ID {
+			emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(ownerID), map[string]any{"type": "post_reply", "user_id": ownerID, "content": u.Username + " 回复了你的帖子。"})
 		}
 		c.JSON(http.StatusCreated, gin.H{"post": post})
 	})
