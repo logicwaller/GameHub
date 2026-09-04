@@ -152,6 +152,62 @@ func (r *redisClient) zadd(key string, score int, member string) {
 	_, _ = r.command("ZADD", key, strconv.Itoa(score), member)
 }
 
+func (r *redisClient) hincrby(key, field string, delta int) {
+	_, _ = r.command("HINCRBY", key, field, strconv.Itoa(delta))
+}
+
+func (r *redisClient) hset(key, field string, value int) {
+	_, _ = r.command("HSET", key, field, strconv.Itoa(value))
+}
+
+func (r *redisClient) setAdd(key, value string) {
+	_, _ = r.command("SADD", key, value)
+}
+
+func (r *redisClient) setRemove(key, value string) {
+	_, _ = r.command("SREM", key, value)
+}
+
+func (r *redisClient) setContains(key, value string) (bool, error) {
+	result, err := r.command("SISMEMBER", key, value)
+	if err != nil {
+		return false, err
+	}
+	member, ok := result.(int64)
+	return ok && member == 1, nil
+}
+
+func (r *redisClient) setMembers(key string) ([]string, error) {
+	result, err := r.command("SMEMBERS", key)
+	if err != nil {
+		return nil, err
+	}
+	items, ok := result.([]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid redis set response")
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if value, ok := item.(string); ok {
+			values = append(values, value)
+		}
+	}
+	return values, nil
+}
+
+func (r *redisClient) setWithTTL(key, value string, ttl time.Duration) bool {
+	result, err := r.command("SET", key, value, "NX", "EX", strconv.Itoa(int(ttl.Seconds())))
+	return err == nil && result == "OK"
+}
+
+func (r *redisClient) lpush(key, value string) {
+	_, _ = r.command("LPUSH", key, value)
+}
+
+func (r *redisClient) ltrim(key string, start, stop int) {
+	_, _ = r.command("LTRIM", key, strconv.Itoa(start), strconv.Itoa(stop))
+}
+
 func (r *redisClient) del(key string) {
 	_, _ = r.command("DEL", key)
 }

@@ -115,6 +115,19 @@ export async function loadGameComments(id) {
   state.comments[id] = data.items || []
 }
 
+export async function loadRelations() {
+  if (!state.user || !localStorage.getItem('gamehub_token')) return
+  const response = await fetch('/api/me/relations', {
+    headers: { Authorization: `Bearer ${localStorage.getItem('gamehub_token')}` }
+  })
+  if (!response.ok) return
+  const data = await response.json()
+  state.liked.splice(0, state.liked.length, ...(data.liked || []))
+  state.favorites.splice(0, state.favorites.length, ...(data.favorites || []))
+  localStorage.setItem('gamehub_liked', JSON.stringify(state.liked))
+  localStorage.setItem('gamehub_favorites', JSON.stringify(state.favorites))
+}
+
 export function setUser(user, token, refresh) {
   state.user = user
   if (user) localStorage.setItem('gamehub_user', JSON.stringify(user))
@@ -124,6 +137,13 @@ export function setUser(user, token, refresh) {
 }
 
 export function logout() {
+  const token = localStorage.getItem('gamehub_token')
+  if (token) {
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    }).catch(() => {})
+  }
   setUser(null)
   localStorage.removeItem('gamehub_token')
   localStorage.removeItem('gamehub_refresh_token')

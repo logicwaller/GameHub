@@ -58,7 +58,64 @@ func openDatabase() (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migratePhaseThree(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func migratePhaseThree(db *sql.DB) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS kafka_processed_events (
+			event_id VARCHAR(64) PRIMARY KEY,
+			topic VARCHAR(120) NOT NULL,
+			processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS search_documents (
+			entity_type VARCHAR(32) NOT NULL,
+			entity_id BIGINT UNSIGNED NOT NULL,
+			title VARCHAR(200) NOT NULL,
+			content TEXT NOT NULL,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (entity_type, entity_id),
+			FULLTEXT KEY idx_search_documents_text (title, content)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS moderation_records (
+			entity_type VARCHAR(32) NOT NULL,
+			entity_id BIGINT UNSIGNED NOT NULL,
+			status VARCHAR(20) NOT NULL,
+			reason VARCHAR(255) NOT NULL DEFAULT '',
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY (entity_type, entity_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS notifications (
+			id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+			user_id INT NOT NULL,
+			type VARCHAR(40) NOT NULL,
+			content VARCHAR(500) NOT NULL,
+			is_read BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			INDEX idx_notifications_user_created (user_id, created_at),
+			CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS game_analytics_daily (
+			game_id INT NOT NULL,
+			stat_date DATE NOT NULL,
+			plays INT NOT NULL DEFAULT 0,
+			likes INT NOT NULL DEFAULT 0,
+			favorites INT NOT NULL DEFAULT 0,
+			comments INT NOT NULL DEFAULT 0,
+			PRIMARY KEY (game_id, stat_date),
+			CONSTRAINT fk_game_analytics_daily_game FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func registerUser(db *sql.DB, username, email, password string) (user, error) {
@@ -115,6 +172,71 @@ func findGame(db *sql.DB, id int) (gameRecord, error) {
 	err := db.QueryRow(`SELECT g.id, g.title, g.description, g.category, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id WHERE g.id = ?`, id).
 		Scan(&item.ID, &item.Title, &item.Description, &item.Category, &item.PlayTime, &item.URL, &item.Cover, &item.AuthorID, &item.Author, &item.Plays, &item.Likes, &item.Favorites, &item.Comments)
 	return item, err
+}
+
+func postAuthorID(db *sql.DB, postID int64) (int, error) {
+	var userID sql.NullInt64
+	err := db.QueryRow(`SELECT user_id FROM posts WHERE id = ?`, postID).Scan(&userID)
+	if err != nil {
+		return 0, err
+	}
+	if !userID.Valid {
+		return 0, nil
+	}
+	return int(userID.Int64), nil
+}
+
+type dailyAnalytics struct {
+	Date      string `json:"date"`
+	Plays     int    `json:"plays"`
+	Likes     int    `json:"likes"`
+	Favorites int    `json:"favorites"`
+	Comments  int    `json:"comments"`
+}
+
+func gameDailyAnalytics(db *sql.DB, authorID int, gameID *int, days int) ([]dailyAnalytics, error) {
+	query := `SELECT DATE_FORMAT(a.stat_date, '%Y-%m-%d'), SUM(a.plays), SUM(a.likes), SUM(a.favorites), SUM(a.comments)
+		FROM game_analytics_daily a JOIN games g ON g.id = a.game_id
+		WHERE g.author_id = ? AND a.stat_date >= CURDATE() - INTERVAL ? DAY`
+	args := []any{authorID, days - 1}
+	if gameID != nil {
+		query += ` AND a.game_id = ?`
+		args = append(args, *gameID)
+	}
+	query += ` GROUP BY a.stat_date ORDER BY a.stat_date ASC`
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]dailyAnalytics, 0)
+	for rows.Next() {
+		var item dailyAnalytics
+		if err := rows.Scan(&item.Date, &item.Plays, &item.Likes, &item.Favorites, &item.Comments); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func userNotifications(db *sql.DB, userID int) ([]map[string]any, error) {
+	rows, err := db.Query(`SELECT id, type, content, is_read, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id int64
+		var eventType, content, createdAt string
+		var isRead bool
+		if err := rows.Scan(&id, &eventType, &content, &isRead, &createdAt); err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{"id": id, "type": eventType, "content": content, "read": isRead, "createdAt": createdAt})
+	}
+	return items, rows.Err()
 }
 
 func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) {
@@ -247,6 +369,37 @@ func updateGameCounter(db *sql.DB, column string, gameID int, delta int) error {
 	}
 	_, err := db.Exec("UPDATE games SET "+column+" = GREATEST(0, "+column+" + ?) WHERE id = ?", delta, gameID)
 	return err
+}
+
+func itemCounter(db *sql.DB, gameID int, column string) int {
+	if column != "plays" && column != "likes" && column != "favorites" && column != "comments" {
+		return 0
+	}
+	var value int
+	if err := db.QueryRow("SELECT "+column+" FROM games WHERE id = ?", gameID).Scan(&value); err != nil {
+		return 0
+	}
+	return value
+}
+
+func userGameRelations(db *sql.DB, table string, userID int) ([]int, error) {
+	if table != "game_likes" && table != "game_favorites" {
+		return nil, fmt.Errorf("invalid relation table")
+	}
+	rows, err := db.Query("SELECT game_id FROM "+table+" WHERE user_id = ?", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]int, 0)
+	for rows.Next() {
+		var gameID int
+		if err := rows.Scan(&gameID); err != nil {
+			return nil, err
+		}
+		items = append(items, gameID)
+	}
+	return items, rows.Err()
 }
 
 func gameComments(db *sql.DB, gameID int) ([]replyRecord, error) {
