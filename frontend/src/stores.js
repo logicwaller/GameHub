@@ -15,7 +15,8 @@ export const state = reactive({
   favorites: load('gamehub_favorites', []),
   liked: load('gamehub_liked', []),
   comments: {},
-  posts: []
+  posts: [],
+  notifications: []
 })
 
 export const isLoggedIn = computed(() => !!state.user)
@@ -108,6 +109,14 @@ export async function loadHotGames() {
   }
 }
 
+export async function refreshHomeData() {
+  await Promise.all([
+    loadGames(),
+    loadHotGames(),
+    loadPosts()
+  ])
+}
+
 export async function loadGameComments(id) {
   const response = await fetch(`/api/games/${id}/comments`)
   const data = await response.json()
@@ -128,12 +137,60 @@ export async function loadRelations() {
   localStorage.setItem('gamehub_favorites', JSON.stringify(state.favorites))
 }
 
+export async function loadNotifications() {
+  if (!state.user || !localStorage.getItem('gamehub_token')) {
+    state.notifications.splice(0, state.notifications.length)
+    return []
+  }
+
+  try {
+    const response = await fetch('/api/notifications', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('gamehub_token')}` }
+    })
+    if (!response.ok) {
+      state.notifications.splice(0, state.notifications.length)
+      return []
+    }
+
+    const data = await response.json()
+    state.notifications.splice(0, state.notifications.length, ...(data.items || []))
+    return state.notifications
+  } catch {
+    return state.notifications
+  }
+}
+
+export async function markNotificationRead(id) {
+  await postAuth(`/api/notifications/${id}/read`)
+  const item = state.notifications.find((notification) => notification.id === id)
+  if (item) item.read = true
+}
+
+export async function markAllNotificationsRead() {
+  await postAuth('/api/notifications/read-all')
+  state.notifications.forEach((notification) => { notification.read = true })
+}
+
 export function setUser(user, token, refresh) {
+  if (token) localStorage.setItem('gamehub_token', token)
+  if (refresh) localStorage.setItem('gamehub_refresh_token', refresh)
+
   state.user = user
   if (user) localStorage.setItem('gamehub_user', JSON.stringify(user))
   else localStorage.removeItem('gamehub_user')
-  if (token) localStorage.setItem('gamehub_token', token)
-  if (refresh) localStorage.setItem('gamehub_refresh_token', refresh)
+}
+
+export function syncUserFromStorage() {
+  const storedUser = load('gamehub_user', null)
+  const token = localStorage.getItem('gamehub_token')
+  const changedUser = state.user?.id !== storedUser?.id
+
+  state.user = storedUser && token ? storedUser : null
+  if (!changedUser) return
+
+  state.liked.splice(0, state.liked.length)
+  state.favorites.splice(0, state.favorites.length)
+  state.notifications.splice(0, state.notifications.length)
 }
 
 export function logout() {
@@ -147,6 +204,7 @@ export function logout() {
   setUser(null)
   localStorage.removeItem('gamehub_token')
   localStorage.removeItem('gamehub_refresh_token')
+  state.notifications.splice(0, state.notifications.length)
 }
 
 export async function toggleFavorite(id) {

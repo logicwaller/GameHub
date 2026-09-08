@@ -1,5 +1,6 @@
 -- GameHub database schema
--- Execute with: mysql -u root -p < schema.sql
+-- Execute from the backend directory with:
+-- mysql -u root -p < schema.sql
 
 CREATE DATABASE IF NOT EXISTS gamehub
   DEFAULT CHARACTER SET utf8mb4
@@ -136,20 +137,13 @@ CREATE TABLE IF NOT EXISTS search_documents (
   FULLTEXT KEY idx_search_documents_text (title, content)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
-CREATE TABLE IF NOT EXISTS moderation_records (
-  entity_type VARCHAR(32) NOT NULL,
-  entity_id BIGINT UNSIGNED NOT NULL,
-  status VARCHAR(20) NOT NULL,
-  reason VARCHAR(255) NOT NULL DEFAULT '',
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (entity_type, entity_id)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
-
 CREATE TABLE IF NOT EXISTS notifications (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   user_id INT NOT NULL,
   type VARCHAR(40) NOT NULL,
   content VARCHAR(500) NOT NULL,
+  target_type VARCHAR(32) NOT NULL DEFAULT '',
+  target_id BIGINT UNSIGNED NULL,
   is_read BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_notifications_user_created (user_id, created_at),
@@ -168,3 +162,44 @@ CREATE TABLE IF NOT EXISTS game_analytics_daily (
   CONSTRAINT fk_game_analytics_daily_game
     FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS analytics_backfill_state (
+  name VARCHAR(100) PRIMARY KEY,
+  completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+-- 为旧的数据库兜底，若相应表没有新添加的字段则创建字段
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS upgrade_gamehub_notifications //
+
+CREATE PROCEDURE upgrade_gamehub_notifications()
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'notifications'
+      AND column_name = 'target_type'
+  ) THEN
+    ALTER TABLE notifications
+      ADD COLUMN target_type VARCHAR(32) NOT NULL DEFAULT '' AFTER content;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'notifications'
+      AND column_name = 'target_id'
+  ) THEN
+    ALTER TABLE notifications
+      ADD COLUMN target_id BIGINT UNSIGNED NULL AFTER target_type;
+  END IF;
+END //
+
+CALL upgrade_gamehub_notifications() //
+
+DROP PROCEDURE upgrade_gamehub_notifications //
+
+DELIMITER ;

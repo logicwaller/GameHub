@@ -68,7 +68,6 @@ func ensureKafkaTopics() error {
 		kafkaTopic(),
 		topicFromEnv("KAFKA_SEARCH_TOPIC", "search.sync"),
 		topicFromEnv("KAFKA_INTERACTION_TOPIC", "interaction.event"),
-		topicFromEnv("KAFKA_COMMENT_TOPIC", "comment.moderation"),
 		topicFromEnv("KAFKA_NOTIFICATION_TOPIC", "notification"),
 	}
 	configs := make([]kafka.TopicConfig, 0, len(topics)*2)
@@ -192,21 +191,37 @@ func processGamePlayEvent(db *sql.DB, eventID string, gameID int) error {
 	if affected == 0 {
 		return tx.Commit()
 	}
+	if err := incrementGamePlay(tx, gameID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func recordGamePlayFallback(db *sql.DB, gameID int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := incrementGamePlay(tx, gameID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func incrementGamePlay(tx *sql.Tx, gameID int) error {
 	if _, err := tx.Exec(`INSERT INTO game_play_events (game_id) VALUES (?)`, gameID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE games SET plays = plays + 1 WHERE id = ?`, gameID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO game_analytics_daily (game_id, stat_date, plays) VALUES (?, CURDATE(), 1) ON DUPLICATE KEY UPDATE plays = plays + 1`, gameID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := tx.Exec(`INSERT INTO game_analytics_daily (game_id, stat_date, plays) VALUES (?, CURDATE(), 1) ON DUPLICATE KEY UPDATE plays = plays + 1`, gameID)
+	return err
 }
 
 func startPhaseThreeConsumers(db *sql.DB) {
 	startEventConsumer(db, topicFromEnv("KAFKA_SEARCH_TOPIC", "search.sync"), "gamehub-search-sync", syncSearchDocument)
-	startEventConsumer(db, topicFromEnv("KAFKA_COMMENT_TOPIC", "comment.moderation"), "gamehub-moderation", moderateContent)
 	startEventConsumer(db, topicFromEnv("KAFKA_INTERACTION_TOPIC", "interaction.event"), "gamehub-analytics", aggregateInteraction)
 	startEventConsumer(db, topicFromEnv("KAFKA_NOTIFICATION_TOPIC", "notification"), "gamehub-notifications", saveNotification)
 }
@@ -304,30 +319,6 @@ func syncSearchDocument(db *sql.DB, event kafkaEvent) error {
 	return nil
 }
 
-func moderateContent(db *sql.DB, event kafkaEvent) error {
-	var payload struct {
-		Type      string `json:"type"`
-		CommentID int64  `json:"comment_id"`
-		PostID    int64  `json:"post_id"`
-	}
-	if err := json.Unmarshal(event.Data, &payload); err != nil {
-		return err
-	}
-	entityType, entityID := payload.Type, payload.CommentID
-	if entityID == 0 {
-		entityID = payload.PostID
-	}
-	if entityID == 0 {
-		return nil
-	}
-	status, reason := "approved", ""
-	if strings.Contains(strings.ToLower(string(event.Data)), "spam") {
-		status, reason = "flagged", "命中演示敏感词"
-	}
-	_, err := db.Exec(`INSERT INTO moderation_records (entity_type, entity_id, status, reason) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), reason=VALUES(reason)`, entityType, entityID, status, reason)
-	return err
-}
-
 func aggregateInteraction(db *sql.DB, event kafkaEvent) error {
 	var payload struct {
 		Type     string `json:"type"`
@@ -361,13 +352,94 @@ func aggregateInteraction(db *sql.DB, event kafkaEvent) error {
 
 func saveNotification(db *sql.DB, event kafkaEvent) error {
 	var payload struct {
-		UserID  int    `json:"user_id"`
-		Type    string `json:"type"`
-		Content string `json:"content"`
+		UserID     int    `json:"user_id"`
+		Type       string `json:"type"`
+		Content    string `json:"content"`
+		TargetType string `json:"target_type"`
+		TargetID   int64  `json:"target_id"`
 	}
 	if err := json.Unmarshal(event.Data, &payload); err != nil || payload.UserID == 0 || payload.Content == "" {
 		return err
 	}
-	_, err := db.Exec(`INSERT INTO notifications (user_id, type, content) VALUES (?, ?, ?)`, payload.UserID, payload.Type, payload.Content)
+	_, err := db.Exec(`INSERT INTO notifications (user_id, type, content, target_type, target_id) VALUES (?, ?, ?, ?, NULLIF(?, 0))`, payload.UserID, payload.Type, payload.Content, payload.TargetType, payload.TargetID)
 	return err
+}
+
+type deadLetterMessage struct {
+	EventID string `json:"eventId"`
+	Topic   string `json:"topic"`
+	Type    string `json:"type"`
+	Error   string `json:"error"`
+}
+
+func validKafkaTopic(topic string) bool {
+	for _, candidate := range []string{
+		kafkaTopic(),
+		topicFromEnv("KAFKA_SEARCH_TOPIC", "search.sync"),
+		topicFromEnv("KAFKA_INTERACTION_TOPIC", "interaction.event"),
+		topicFromEnv("KAFKA_NOTIFICATION_TOPIC", "notification"),
+	} {
+		if topic == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func readDeadLetters(topic string) ([]deadLetterMessage, error) {
+	if !validKafkaTopic(topic) {
+		return nil, fmt.Errorf("invalid topic")
+	}
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     kafkaBrokers(),
+		Topic:       topic + ".dlq",
+		StartOffset: kafka.FirstOffset,
+		MinBytes:    1,
+		MaxBytes:    10e6,
+	})
+	defer reader.Close()
+	items := make([]deadLetterMessage, 0)
+	for len(items) < 50 {
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		message, err := reader.ReadMessage(ctx)
+		cancel()
+		if err != nil {
+			if len(items) > 0 || err == context.DeadlineExceeded {
+				break
+			}
+			return nil, err
+		}
+		var payload struct {
+			Event kafkaEvent `json:"event"`
+			Error string     `json:"error"`
+		}
+		if json.Unmarshal(message.Value, &payload) == nil && payload.Event.EventID != "" {
+			items = append(items, deadLetterMessage{EventID: payload.Event.EventID, Topic: topic, Type: payload.Event.Type, Error: payload.Error})
+		}
+	}
+	return items, nil
+}
+
+func replayDeadLetter(topic, eventID string) error {
+	items, err := readDeadLetters(topic)
+	if err != nil {
+		return err
+	}
+	reader := kafka.NewReader(kafka.ReaderConfig{Brokers: kafkaBrokers(), Topic: topic + ".dlq", StartOffset: kafka.FirstOffset, MinBytes: 1, MaxBytes: 10e6})
+	defer reader.Close()
+	for range items {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		message, err := reader.ReadMessage(ctx)
+		cancel()
+		if err != nil {
+			return err
+		}
+		var payload struct {
+			Event kafkaEvent `json:"event"`
+		}
+		if json.Unmarshal(message.Value, &payload) == nil && payload.Event.EventID == eventID {
+			return publishKafka(topic, eventID, payload.Event)
+		}
+	}
+	return sql.ErrNoRows
 }

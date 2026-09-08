@@ -20,7 +20,9 @@ The API listens on `http://localhost:8080`; Vite serves the UI on `http://localh
 
 ## MySQL configuration
 
-The backend now uses MySQL for users and games. Create the `gamehub` database first, then copy `backend/.env.example` to `backend/.env` and fill in your values:
+The backend uses MySQL for users and games. Import the complete schema before
+starting the API, then copy `backend/.env.example` to `backend/.env` and fill
+in your values:
 
 ```powershell
 cd backend
@@ -43,15 +45,15 @@ $env:JWT_SECRET = "use-a-long-random-value"
 go run .
 ```
 
-On first startup the API creates all tables (`users`, `games`, favorites, likes, comments, posts, replies, and play events) if they do not exist. Check `http://localhost:8080/api/health`; a healthy response includes `"database":"mysql"`.
-
-The complete schema for favorites, likes, game comments, forum posts, post replies, and play-time events is in `backend/schema.sql`. Execute it with your MySQL password if you want to create the tables before starting the API:
+`backend/schema.sql` is the only place that creates or upgrades the database
+schema. It contains all required tables, including the Kafka, notification,
+and analytics tables. Execute it before starting the API:
 
 ```powershell
-mysql -u root -p gamehub < backend\schema.sql
+cd backend
+mysql -u root -p < schema.sql
 ```
 
-The API startup migration also creates these tables automatically after a successful database connection.
 
 ## Redis and Kafka
 
@@ -81,7 +83,6 @@ KAFKA_BROKERS=127.0.0.1:9092
 KAFKA_GAME_PLAY_TOPIC=game.play
 KAFKA_SEARCH_TOPIC=search.sync
 KAFKA_INTERACTION_TOPIC=interaction.event
-KAFKA_COMMENT_TOPIC=comment.moderation
 KAFKA_NOTIFICATION_TOPIC=notification
 ```
 
@@ -101,10 +102,14 @@ Phase-three endpoints:
 
 Additional phase-three behaviour:
 
-- The backend creates phase-three tables automatically: processed Kafka events, search documents, moderation records, notifications and daily game analytics.
-- Kafka consumers update the local search-document index, record comment moderation results, store notifications and aggregate interaction metrics by day.
+- `schema.sql` creates the phase-three tables: processed Kafka events, search documents, notifications, daily game analytics, and the one-time analytics-backfill marker.
+- Kafka consumers update the local search-document index, store notifications, and aggregate interaction metrics by day.
+- `GET /api/games/favorites/rank` returns the top 20 games ranked by favorite count, using Redis with a MySQL fallback.
+- On startup, the backend performs a one-time historical backfill of daily analytics from existing play, like, favorite, and comment records. Its completion is recorded in `analytics_backfill_state`.
 - `POST /api/auth/logout` blacklists the current JWT in Redis; login/register endpoints have a stricter 10-per-minute IP limit.
 - Authenticated write requests may provide an `Idempotency-Key` header to reject accidental retries for two minutes.
 - `GET /api/me/relations`, `GET /api/notifications` and `GET /api/games/analytics?days=7&game_id={id}` provide cached interaction state, notifications and real daily analytics data.
+
+Administrators can inspect and replay failed Kafka messages from the “Kafka 死信队列” section of the admin page. The corresponding APIs are `GET /api/admin/kafka/dlq/{topic}` and `POST /api/admin/kafka/dlq/{topic}/{eventID}/replay`.
 
 Redis failures fail open, so MySQL-backed pages continue to work. Kafka is connected directly through the Go client; the backend does not need access to the Docker CLI. The broker only needs to be reachable at `KAFKA_BROKERS`.

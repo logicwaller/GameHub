@@ -1,19 +1,35 @@
 <template>
-  <section class="auth-page"><form class="auth-form" @submit.prevent="submit">
-    <RouterLink class="brand centered" to="/"><span class="brand-mark">G</span><span>GameHub</span></RouterLink>
-    <p class="eyebrow">WELCOME BACK</p><h1>登录你的账号</h1>
-    <label>用户名<input v-model="form.username" required autocomplete="username"></label>
-    <label>密码<input v-model="form.password" required type="password" autocomplete="current-password"></label>
-    <p v-if="error" class="error">{{ error }}</p>
-    <button class="primary full" :disabled="loading">{{ loading ? '登录中...' : '登录' }} <span>→</span></button>
-    <p class="switch">还没有账号？<RouterLink to="/register">立即注册</RouterLink></p>
-  </form></section>
+  <section class="auth-page">
+    <form class="auth-form" @submit.prevent="submit">
+      <RouterLink class="brand centered" to="/">
+        <span class="brand-mark">G</span>
+        <span>GameHub</span>
+      </RouterLink>
+      <p class="eyebrow">WELCOME BACK</p>
+      <h1>登录你的账号</h1>
+      <label>
+        用户名
+        <input v-model="form.username" required autocomplete="username">
+      </label>
+      <label>
+        密码
+        <input v-model="form.password" required type="password" autocomplete="current-password">
+      </label>
+      <p v-if="error" class="error">{{ error }}</p>
+      <button class="primary full" :disabled="loading">
+        {{ loading ? '登录中...' : '登录' }} <span>→</span>
+      </button>
+      <p class="switch">
+        还没有账号？<RouterLink to="/register">立即注册</RouterLink>
+      </p>
+    </form>
+  </section>
 </template>
 
 <script setup>
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { setUser } from '../stores'
+import { refreshHomeData, setUser } from '../stores'
 
 const router = useRouter()
 const loading = ref(false)
@@ -24,11 +40,16 @@ async function submit() {
   loading.value = true
   error.value = ''
   try {
-    const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form)
+    })
     const data = await response.json()
     if (!response.ok) throw new Error(data.message)
     setUser(data.user, data.token, data.refresh_token)
-    router.push('/')
+    await router.replace('/')
+    void refreshHomeData()
   } catch (err) {
     error.value = err.message || '登录失败'
   } finally {

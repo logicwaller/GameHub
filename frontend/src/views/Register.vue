@@ -1,20 +1,39 @@
 <template>
-  <section class="auth-page"><form class="auth-form" @submit.prevent="submit">
-    <RouterLink class="brand centered" to="/"><span class="brand-mark">G</span><span>GameHub</span></RouterLink>
-    <p class="eyebrow">JOIN THE COMMUNITY</p><h1>创建账号</h1>
-    <label>用户名<input v-model="form.username" required minlength="2" autocomplete="username"></label>
-    <label>邮箱<input v-model="form.email" required type="email" autocomplete="email"></label>
-    <label>密码<input v-model="form.password" required minlength="6" type="password" autocomplete="new-password"></label>
-    <p v-if="error" class="error">{{ error }}</p>
-    <button class="primary full" :disabled="loading">{{ loading ? '创建中...' : '创建账号' }} <span>→</span></button>
-    <p class="switch">已经有账号？<RouterLink to="/login">返回登录</RouterLink></p>
-  </form></section>
+  <section class="auth-page">
+    <form class="auth-form" @submit.prevent="submit">
+      <RouterLink class="brand centered" to="/">
+        <span class="brand-mark">G</span>
+        <span>GameHub</span>
+      </RouterLink>
+      <p class="eyebrow">JOIN THE COMMUNITY</p>
+      <h1>创建账号</h1>
+      <label>
+        用户名
+        <input v-model="form.username" required minlength="2" autocomplete="username">
+      </label>
+      <label>
+        邮箱
+        <input v-model="form.email" required type="email" autocomplete="email">
+      </label>
+      <label>
+        密码
+        <input v-model="form.password" required minlength="6" type="password" autocomplete="new-password">
+      </label>
+      <p v-if="error" class="error">{{ error }}</p>
+      <button class="primary full" :disabled="loading">
+        {{ loading ? '创建中...' : '创建账号' }} <span>→</span>
+      </button>
+      <p class="switch">
+        已经有账号？<RouterLink to="/login">返回登录</RouterLink>
+      </p>
+    </form>
+  </section>
 </template>
 
 <script setup>
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { setUser } from '../stores'
+import { refreshHomeData, setUser } from '../stores'
 
 const router = useRouter()
 const loading = ref(false)
@@ -25,11 +44,16 @@ async function submit() {
   loading.value = true
   error.value = ''
   try {
-    const response = await fetch('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    const response = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form)
+    })
     const data = await response.json()
     if (!response.ok) throw new Error(data.message)
     setUser(data.user, data.token, data.refresh_token)
-    router.push('/')
+    await router.replace('/')
+    void refreshHomeData()
   } catch (err) {
     error.value = err.message || '注册失败'
   } finally {

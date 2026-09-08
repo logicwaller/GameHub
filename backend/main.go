@@ -202,6 +202,12 @@ func main() {
 		panic("MySQL 连接失败: " + err.Error())
 	}
 	defer db.Close()
+	if err := rebuildSearchDocuments(db); err != nil {
+		log.Printf("初始化搜索文档失败: %v", err)
+	}
+	if err := backfillDailyAnalytics(db); err != nil {
+		log.Printf("历史日统计回填失败: %v", err)
+	}
 
 	// 启动redis
 	cache := newRedisClient()
@@ -228,7 +234,7 @@ func main() {
 	r.Use(idempotency(cache))
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "http://localhost:5173")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -264,9 +270,14 @@ func main() {
 			return
 		}
 		if query != "" {
+			matchedIDs, err := searchGameIDs(db, query)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "搜索索引读取失败"})
+				return
+			}
 			filtered := items[:0]
 			for _, item := range items {
-				if strings.Contains(strings.ToLower(item.Title), strings.ToLower(query)) || strings.Contains(strings.ToLower(item.Description), strings.ToLower(query)) {
+				if matchedIDs[item.ID] {
 					filtered = append(filtered, item)
 				}
 			}
@@ -337,6 +348,33 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"items": items})
 	})
+	r.GET("/api/games/favorites/rank", func(c *gin.Context) {
+		ids := cache.zrange("game:fav:rank", 20)
+		items := make([]gameRecord, 0, len(ids))
+		for _, value := range ids {
+			id, err := strconv.Atoi(value)
+			if err != nil {
+				continue
+			}
+			item, err := findGame(db, id)
+			if err == nil {
+				items = append(items, item)
+			}
+		}
+		if len(items) == 0 {
+			items, _ = listGames(db, nil)
+			sort.Slice(items, func(i, j int) bool {
+				return items[i].Favorites > items[j].Favorites
+			})
+			if len(items) > 20 {
+				items = items[:20]
+			}
+			for _, item := range items {
+				cache.zadd("game:fav:rank", item.Favorites, strconv.Itoa(item.ID))
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"items": items})
+	})
 	r.POST("/api/games/:id/play", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
@@ -347,10 +385,11 @@ func main() {
 			c.JSON(http.StatusNotFound, gin.H{"message": "游戏不存在"})
 			return
 		}
+		queued := true
 		if err := publishGamePlay(id); err != nil {
 			log.Printf("Kafka 不可用，回退为同步记录游玩量: %v", err)
-			_, _ = db.Exec(`INSERT INTO game_play_events (game_id) VALUES (?)`, id)
-			if _, err := db.Exec(`UPDATE games SET plays = plays + 1 WHERE id = ?`, id); err != nil {
+			queued = false
+			if err := recordGamePlayFallback(db, id); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"message": "记录游玩失败"})
 				return
 			}
@@ -362,8 +401,12 @@ func main() {
 		cache.del(fmt.Sprintf("game:detail:%d", id))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
-		cache.hset(fmt.Sprintf("game:stats:%d", id), "likes", itemCounter(db, id, "likes"))
-		c.JSON(http.StatusAccepted, gin.H{"plays": item.Plays, "queued": true})
+		cache.hset(fmt.Sprintf("game:stats:%d", id), "plays", item.Plays)
+		status := http.StatusAccepted
+		if !queued {
+			status = http.StatusOK
+		}
+		c.JSON(status, gin.H{"plays": item.Plays, "queued": queued})
 	})
 	r.GET("/api/games/:id/comments", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
@@ -550,6 +593,40 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"items": items})
 	})
+	secured.POST("/notifications/:id/read", func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "通知 ID 无效"})
+			return
+		}
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		if err := markNotificationRead(db, u.ID, id); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "通知不存在"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "更新通知失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	secured.POST("/notifications/read-all", func(c *gin.Context) {
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		if err := markAllNotificationsRead(db, u.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "更新通知失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
 	secured.POST("/games/:id/like", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
@@ -661,14 +738,33 @@ func main() {
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
 		cache.hset(fmt.Sprintf("game:stats:%d", id), "comments", itemCounter(db, id, "comments"))
-		emitEvent("KAFKA_COMMENT_TOPIC", "comment.moderation", strconv.Itoa(id), map[string]any{"type": "game_comment", "game_id": id, "comment_id": comment.ID})
 		emitEvent("KAFKA_INTERACTION_TOPIC", "interaction.event", strconv.Itoa(id), map[string]any{"type": "comment", "game_id": id, "user_id": u.ID})
 		if game, err := findGame(db, id); err == nil && game.AuthorID != u.ID {
-			emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(game.AuthorID), map[string]any{"type": "game_comment", "user_id": game.AuthorID, "content": u.Username + " 评论了你的游戏《" + game.Title + "》。"})
+			emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(game.AuthorID), map[string]any{"type": "game_comment", "user_id": game.AuthorID, "content": u.Username + " 评论了你的游戏《" + game.Title + "》。", "target_type": "game", "target_id": id})
 		}
 		c.JSON(http.StatusCreated, gin.H{"comment": comment})
 	})
 	admin := r.Group("/api/admin", authMiddleware(cache), adminMiddleware(db))
+	admin.GET("/kafka/dlq/:topic", func(c *gin.Context) {
+		items, err := readDeadLetters(c.Param("topic"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "读取死信消息失败"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"items": items})
+	})
+	admin.POST("/kafka/dlq/:topic/:eventID/replay", func(c *gin.Context) {
+		err := replayDeadLetter(c.Param("topic"), c.Param("eventID"))
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "死信消息不存在"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "重放死信消息失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
 	admin.DELETE("/games/:id", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
@@ -702,8 +798,10 @@ func main() {
 			return
 		}
 		cache.del(fmt.Sprintf("game:detail:%d", gameID))
+		cache.del(fmt.Sprintf("game:comments:%d", gameID))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		cache.hset(fmt.Sprintf("game:stats:%d", gameID), "comments", itemCounter(db, int(gameID), "comments"))
 		c.Status(http.StatusNoContent)
 	})
 	admin.DELETE("/posts/:id", func(c *gin.Context) {
@@ -807,7 +905,7 @@ func main() {
 			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
 			return
 		}
-		post, err := createPostReply(db, id, input.Text, u.Username, u.ID)
+		post, _, err := createPostReply(db, id, input.Text, u.Username, u.ID)
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"message": "帖子不存在"})
 			return
@@ -818,9 +916,8 @@ func main() {
 		}
 		cache.del("forum:latest")
 		cache.del(fmt.Sprintf("post:detail:%d", id))
-		emitEvent("KAFKA_COMMENT_TOPIC", "comment.moderation", strconv.FormatInt(id, 10), map[string]any{"type": "post_reply", "post_id": id})
 		if ownerID, err := postAuthorID(db, id); err == nil && ownerID != 0 && ownerID != u.ID {
-			emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(ownerID), map[string]any{"type": "post_reply", "user_id": ownerID, "content": u.Username + " 回复了你的帖子。"})
+			emitEvent("KAFKA_NOTIFICATION_TOPIC", "notification", strconv.Itoa(ownerID), map[string]any{"type": "post_reply", "user_id": ownerID, "content": u.Username + " 回复了你的帖子。", "target_type": "post", "target_id": id})
 		}
 		c.JSON(http.StatusCreated, gin.H{"post": post})
 	})
