@@ -16,8 +16,8 @@
         <button
           v-for="item in categories"
           :key="item"
-          :class="{ active: category === item }"
-          @click="category = item"
+          :class="{ active: primaryType === item }"
+          @click="primaryType = item"
         >
           {{ item }}
         </button>
@@ -38,13 +38,16 @@
         <div class="game-cover" :class="game.color" :style="coverStyle(game)">
           <img v-if="game.cover" :src="game.cover" :alt="`${game.title} 封面`">
           <span v-else>{{ game.icon }}</span>
-          <small>{{ game.type }}</small>
+          <small>{{ game.primaryType }}</small>
         </div>
         <div class="game-info">
           <h3 v-html="highlight(game.title)"></h3>
           <p>{{ game.description }}</p>
-          <div>
-            <span class="tag">{{ game.category }}</span>
+          <div class="game-card-meta">
+            <span class="tag">{{ game.primaryType }}</span>
+            <span v-for="tag in game.tags?.slice(0, 2)" :key="tag" class="tag tag-secondary">
+              {{ tag }}
+            </span>
             <span class="play-count">
               {{ format(game[sort]) }} {{ sort === 'plays' ? '次浏览' : '个赞' }}
             </span>
@@ -67,21 +70,21 @@ import { computed, ref, watch } from 'vue'
 import { coverStyle, loadGames, state } from '../stores'
 
 const query = ref('')
-const category = ref('全部')
+const primaryType = ref('全部')
 const sort = ref('plays')
 const page = ref(1)
 const pageSize = 9
-const categories = ['全部', '动作', '策略', '休闲', '解谜']
+const categories = ['全部', 'ARG/WIG', '现实互动解谜', '网页互动游戏', '网页解谜', '互动叙事']
 
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   return [...state.games]
     .filter((game) => {
-      const matchesCategory = category.value === '全部' || game.category === category.value
+      const matchesPrimaryType = primaryType.value === '全部' || game.primaryType === primaryType.value
       const matchesKeyword = !keyword
         || game.title.toLowerCase().includes(keyword)
         || game.description.toLowerCase().includes(keyword)
-      return matchesCategory && matchesKeyword
+      return matchesPrimaryType && matchesKeyword
     })
     .sort((a, b) => (b[sort.value] || 0) - (a[sort.value] || 0))
 })
@@ -103,13 +106,13 @@ function highlight(text) {
 }
 
 let searchTimer
-watch([query, sort, category], ([nextQuery, nextSort, nextCategory]) => {
+watch([query, sort, primaryType], ([nextQuery, nextSort, nextPrimaryType]) => {
   page.value = 1
   clearTimeout(searchTimer)
   searchTimer = setTimeout(() => loadGames({
     q: nextQuery.trim(),
     sort: nextSort,
-    category: nextCategory
+    primaryType: nextPrimaryType
   }), 250)
 })
 

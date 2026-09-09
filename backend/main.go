@@ -31,19 +31,52 @@ type user struct {
 }
 
 type gameRecord struct {
-	ID          int    `json:"id"`
-	Title       string `json:"title" binding:"required"`
-	Description string `json:"description" binding:"required"`
-	Category    string `json:"category" binding:"required"`
-	PlayTime    string `json:"playTime" binding:"required"`
-	URL         string `json:"url" binding:"required,url"`
-	Cover       string `json:"cover"`
-	AuthorID    int    `json:"authorId"`
-	Author      string `json:"author"`
-	Plays       int    `json:"plays"`
-	Likes       int    `json:"likes"`
-	Favorites   int    `json:"favorites"`
-	Comments    int    `json:"comments"`
+	ID          int      `json:"id"`
+	Title       string   `json:"title" binding:"required"`
+	Description string   `json:"description" binding:"required"`
+	PrimaryType string   `json:"primaryType" binding:"required"`
+	Tags        []string `json:"tags"`
+	PlayTime    string   `json:"playTime" binding:"required"`
+	URL         string   `json:"url" binding:"required,url"`
+	Cover       string   `json:"cover"`
+	AuthorID    int      `json:"authorId"`
+	Author      string   `json:"author"`
+	Plays       int      `json:"plays"`
+	Likes       int      `json:"likes"`
+	Favorites   int      `json:"favorites"`
+	Comments    int      `json:"comments"`
+}
+
+var primaryGameTypes = map[string]bool{
+	"ARG/WIG": true,
+	"现实互动解谜":  true,
+	"网页互动游戏":  true,
+	"网页解谜":    true,
+	"互动叙事":    true,
+}
+
+func normalizeGameTags(tags []string) ([]string, error) {
+	if len(tags) > 12 {
+		return nil, fmt.Errorf("标签最多 12 个")
+	}
+	items := make([]string, 0, len(tags))
+	seen := make(map[string]bool)
+	for _, tag := range tags {
+		name := strings.TrimSpace(tag)
+		if name == "" {
+			continue
+		}
+		if len([]rune(name)) > 24 {
+			return nil, fmt.Errorf("单个标签不能超过 24 个字符")
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		items = append(items, name)
+	}
+	return items, nil
 }
 
 func jwtSecret() string {
@@ -255,11 +288,11 @@ func main() {
 	})
 	r.GET("/api/games", func(c *gin.Context) {
 		query := strings.TrimSpace(c.Query("q"))
-		category := strings.TrimSpace(c.Query("category"))
+		primaryType := strings.TrimSpace(c.Query("primary_type"))
 		sortBy := c.DefaultQuery("sort", "plays")
-		cacheKey := "games:list:" + query + ":" + category + ":" + sortBy
+		cacheKey := "games:list:" + query + ":" + primaryType + ":" + sortBy
 		var cached []gameRecord
-		if query == "" && category == "" && (sortBy == "plays" || sortBy == "likes") && cache.getJSON(cacheKey, &cached) {
+		if query == "" && primaryType == "" && (sortBy == "plays" || sortBy == "likes") && cache.getJSON(cacheKey, &cached) {
 			c.JSON(http.StatusOK, gin.H{"items": cached, "cached": true})
 			return
 		}
@@ -283,10 +316,10 @@ func main() {
 			}
 			items = filtered
 		}
-		if category != "" && category != "全部" {
+		if primaryType != "" && primaryType != "全部" {
 			filtered := items[:0]
 			for _, item := range items {
-				if item.Category == category {
+				if item.PrimaryType == primaryType {
 					filtered = append(filtered, item)
 				}
 			}
@@ -298,7 +331,7 @@ func main() {
 			}
 			return items[i].Plays > items[j].Plays
 		})
-		if query == "" && category == "" && (sortBy == "plays" || sortBy == "likes") {
+		if query == "" && primaryType == "" && (sortBy == "plays" || sortBy == "likes") {
 			cache.setJSON(cacheKey, items, 10*time.Minute)
 		}
 		c.JSON(http.StatusOK, gin.H{"items": items})
@@ -845,6 +878,17 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "请填写完整的游戏信息"})
 			return
 		}
+		input.PrimaryType = strings.TrimSpace(input.PrimaryType)
+		if !primaryGameTypes[input.PrimaryType] {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "请选择有效的主类型"})
+			return
+		}
+		tags, err := normalizeGameTags(input.Tags)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		input.Tags = tags
 		username, _ := c.Get("username")
 		u, _, err := findUser(db, username.(string))
 		if err != nil {

@@ -70,6 +70,12 @@ function syncAuthAcrossTabs(event) {
   }
 }
 
+function redirectToLogin() {
+  if (router.currentRoute.value.path !== '/login') {
+    void router.replace('/login')
+  }
+}
+
 watch(
   () => state.user?.id,
   (userID) => {
@@ -84,10 +90,12 @@ watch(
 
 onMounted(() => {
   window.addEventListener('storage', syncAuthAcrossTabs)
+  window.addEventListener('gamehub:auth-expired', redirectToLogin)
   void refreshHomeData()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('storage', syncAuthAcrossTabs)
+  window.removeEventListener('gamehub:auth-expired', redirectToLogin)
 })
 </script>

@@ -65,10 +65,26 @@ async function postAuth(path, body, method = 'POST') {
     },
     body: JSON.stringify(body || {})
   })
+  if (response.status === 401) {
+    expireSession()
+  }
   if (response.status === 204) return {}
   const data = await response.json()
   if (!response.ok) throw new Error(data.message || '操作失败')
   return data
+}
+
+export function expireSession() {
+  const hadSession = Boolean(state.user || localStorage.getItem('gamehub_token'))
+  setUser(null)
+  localStorage.removeItem('gamehub_token')
+  localStorage.removeItem('gamehub_refresh_token')
+  state.liked.splice(0, state.liked.length)
+  state.favorites.splice(0, state.favorites.length)
+  state.notifications.splice(0, state.notifications.length)
+  if (hadSession) {
+    window.dispatchEvent(new CustomEvent('gamehub:auth-expired'))
+  }
 }
 
 export async function loadGames(options = {}) {
@@ -76,7 +92,9 @@ export async function loadGames(options = {}) {
     const params = new URLSearchParams()
     if (options.q) params.set('q', options.q)
     if (options.sort) params.set('sort', options.sort)
-    if (options.category && options.category !== '全部') params.set('category', options.category)
+    if (options.primaryType && options.primaryType !== '全部') {
+      params.set('primary_type', options.primaryType)
+    }
     const query = params.toString()
     const response = await fetch(`/api/games${query ? `?${query}` : ''}`)
     if (!response.ok) throw new Error('游戏接口不可用')
@@ -129,6 +147,10 @@ export async function loadRelations() {
   const response = await fetch('/api/me/relations', {
     headers: { Authorization: `Bearer ${localStorage.getItem('gamehub_token')}` }
   })
+  if (response.status === 401) {
+    expireSession()
+    return
+  }
   if (!response.ok) return
   const data = await response.json()
   state.liked.splice(0, state.liked.length, ...(data.liked || []))
@@ -147,6 +169,10 @@ export async function loadNotifications() {
     const response = await fetch('/api/notifications', {
       headers: { Authorization: `Bearer ${localStorage.getItem('gamehub_token')}` }
     })
+    if (response.status === 401) {
+      expireSession()
+      return []
+    }
     if (!response.ok) {
       state.notifications.splice(0, state.notifications.length)
       return []

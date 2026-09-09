@@ -15,7 +15,7 @@
           <RouterLink :to="`/games/${game.id}`">
             <strong>{{ game.title }}</strong>
           </RouterLink>
-          <small>{{ game.category }} · {{ game.plays.toLocaleString() }} 浏览 · {{ game.likes }} 点赞</small>
+          <small>{{ game.primaryType }} · {{ game.plays.toLocaleString() }} 浏览 · {{ game.likes }} 点赞</small>
         </div>
         <button class="danger" @click="removeGameItem(game.id)">删除游戏</button>
       </article>

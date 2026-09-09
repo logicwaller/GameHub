@@ -87,7 +87,7 @@ func findUserByID(db *sql.DB, id int) (user, error) {
 }
 
 func listGames(db *sql.DB, authorID *int) ([]gameRecord, error) {
-	query := `SELECT g.id, g.title, g.description, g.category, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id`
+	query := `SELECT g.id, g.title, g.description, g.primary_type, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id`
 	args := []any{}
 	if authorID != nil {
 		query += ` WHERE g.author_id = ?`
@@ -102,7 +102,11 @@ func listGames(db *sql.DB, authorID *int) ([]gameRecord, error) {
 	items := make([]gameRecord, 0)
 	for rows.Next() {
 		var item gameRecord
-		if err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.Category, &item.PlayTime, &item.URL, &item.Cover, &item.AuthorID, &item.Author, &item.Plays, &item.Likes, &item.Favorites, &item.Comments); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.PrimaryType, &item.PlayTime, &item.URL, &item.Cover, &item.AuthorID, &item.Author, &item.Plays, &item.Likes, &item.Favorites, &item.Comments); err != nil {
+			return nil, err
+		}
+		item.Tags, err = gameTags(db, item.ID)
+		if err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -137,9 +141,30 @@ func rebuildSearchDocuments(db *sql.DB) error {
 
 func findGame(db *sql.DB, id int) (gameRecord, error) {
 	var item gameRecord
-	err := db.QueryRow(`SELECT g.id, g.title, g.description, g.category, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id WHERE g.id = ?`, id).
-		Scan(&item.ID, &item.Title, &item.Description, &item.Category, &item.PlayTime, &item.URL, &item.Cover, &item.AuthorID, &item.Author, &item.Plays, &item.Likes, &item.Favorites, &item.Comments)
+	err := db.QueryRow(`SELECT g.id, g.title, g.description, g.primary_type, g.play_time, g.url, COALESCE(g.cover, ''), g.author_id, u.username, g.plays, g.likes, g.favorites, g.comments FROM games AS g JOIN users AS u ON u.id = g.author_id WHERE g.id = ?`, id).
+		Scan(&item.ID, &item.Title, &item.Description, &item.PrimaryType, &item.PlayTime, &item.URL, &item.Cover, &item.AuthorID, &item.Author, &item.Plays, &item.Likes, &item.Favorites, &item.Comments)
+	if err != nil {
+		return item, err
+	}
+	item.Tags, err = gameTags(db, item.ID)
 	return item, err
+}
+
+func gameTags(db *sql.DB, gameID int) ([]string, error) {
+	rows, err := db.Query(`SELECT t.name FROM tags t JOIN game_tags gt ON gt.tag_id = t.id WHERE gt.game_id = ? ORDER BY t.name`, gameID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tags := make([]string, 0)
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		tags = append(tags, tag)
+	}
+	return tags, rows.Err()
 }
 
 func postAuthorID(db *sql.DB, postID int64) (int, error) {
@@ -276,7 +301,12 @@ func markAllNotificationsRead(db *sql.DB, userID int) error {
 }
 
 func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) {
-	result, err := db.Exec(`INSERT INTO games (title, description, category, play_time, url, cover, author_id) VALUES (?, ?, ?, ?, ?, ?, ?)`, input.Title, input.Description, input.Category, input.PlayTime, input.URL, input.Cover, authorID)
+	tx, err := db.Begin()
+	if err != nil {
+		return gameRecord{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`INSERT INTO games (title, description, primary_type, play_time, url, cover, author_id) VALUES (?, ?, ?, ?, ?, ?, ?)`, input.Title, input.Description, input.PrimaryType, input.PlayTime, input.URL, input.Cover, authorID)
 	if err != nil {
 		return gameRecord{}, err
 	}
@@ -286,6 +316,21 @@ func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) 
 	}
 	input.ID = int(id)
 	input.AuthorID = authorID
+	for _, tag := range input.Tags {
+		if _, err := tx.Exec(`INSERT INTO tags (name) VALUES (?) ON DUPLICATE KEY UPDATE name = VALUES(name)`, tag); err != nil {
+			return gameRecord{}, err
+		}
+		var tagID int
+		if err := tx.QueryRow(`SELECT id FROM tags WHERE name = ?`, tag).Scan(&tagID); err != nil {
+			return gameRecord{}, err
+		}
+		if _, err := tx.Exec(`INSERT IGNORE INTO game_tags (game_id, tag_id) VALUES (?, ?)`, input.ID, tagID); err != nil {
+			return gameRecord{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return gameRecord{}, err
+	}
 	return input, nil
 }
 

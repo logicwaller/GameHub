@@ -6,13 +6,22 @@
         <div class="detail-cover" :class="game.color" :style="coverStyle(game)">
           <img v-if="game.cover" :src="game.cover" :alt="`${game.title} 封面`">
           <span v-else>{{ game.icon }}</span>
-          <small>{{ game.type }}</small>
+          <small>{{ game.primaryType }}</small>
         </div>
         <div>
-          <p class="eyebrow">FEATURED GAME · {{ game.category }}</p>
+          <p class="eyebrow">FEATURED GAME · {{ game.primaryType }}</p>
           <h1>{{ game.title }}</h1>
           <p class="detail-lead">{{ game.description }}</p>
-          <RouterLink :to="`/users/${game.author || game.authorId || 'editor'}`" class="game-author"><span class="avatar">{{ game.authorAvatar || game.author?.[0] || 'G' }}</span><span><small>作者</small><strong>{{ game.author || 'GameHub 编辑' }}</strong></span></RouterLink>
+          <div v-if="game.tags?.length" class="game-tag-list" aria-label="游戏标签">
+            <span v-for="tag in game.tags" :key="tag" class="tag tag-secondary">{{ tag }}</span>
+          </div>
+          <RouterLink :to="`/users/${game.author || game.authorId || 'editor'}`" class="game-author">
+            <span class="avatar">{{ game.authorAvatar || game.author?.[0] || 'G' }}</span>
+            <span>
+              <small>作者</small>
+              <strong>{{ game.author || 'GameHub 编辑' }}</strong>
+            </span>
+          </RouterLink>
           <div class="detail-meta">
             <span>◷ {{ game.playTime }}</span>
             <span>♙ {{ game.plays.toLocaleString() }} 次浏览</span>
@@ -43,14 +52,22 @@
           <input v-model="commentText" placeholder="分享你的游戏体验..." required>
           <button class="primary">发表评论</button>
         </form>
-          <article v-for="comment in comments" :key="comment.id" class="comment">
-          <RouterLink :to="`/users/${comment.authorId || comment.author}`" class="avatar-link"><span class="avatar">{{ comment.authorAvatar || comment.author[0] }}</span></RouterLink>
+        <article v-for="comment in comments" :key="comment.id" class="comment">
+          <RouterLink :to="`/users/${comment.authorId || comment.author}`" class="avatar-link">
+            <span class="avatar">{{ comment.authorAvatar || comment.author[0] }}</span>
+          </RouterLink>
           <div>
-            <strong><RouterLink :to="`/users/${comment.authorId || comment.author}`">{{ comment.author }}</RouterLink></strong>
+            <strong>
+              <RouterLink :to="`/users/${comment.authorId || comment.author}`">
+                {{ comment.author }}
+              </RouterLink>
+            </strong>
             <small>{{ comment.createdAt }}</small>
             <p>{{ comment.text }}</p>
           </div>
-          <button v-if="isAdmin" class="danger comment-delete" @click="removeComment(comment.id)">删除评论</button>
+          <button v-if="isAdmin" class="danger comment-delete" @click="removeComment(comment.id)">
+            删除评论
+          </button>
         </article>
         <p v-if="!comments.length" class="empty">还没有评论，来留下第一条吧。</p>
       </div>
@@ -89,13 +106,21 @@ loadGameComments(Number(route.params.id)).catch(() => {})
 async function like() {
   if (!game.value) return
   actionError.value = ''
-  try { await toggleLike(game.value.id) } catch (error) { actionError.value = error.message }
+  try {
+    await toggleLike(game.value.id)
+  } catch (error) {
+    actionError.value = error.message
+  }
 }
 
 async function fav() {
   if (!game.value) return
   actionError.value = ''
-  try { await toggleFavorite(game.value.id) } catch (error) { actionError.value = error.message }
+  try {
+    await toggleFavorite(game.value.id)
+  } catch (error) {
+    actionError.value = error.message
+  }
 }
 
 function recordPlay() {
@@ -118,6 +143,10 @@ async function submitComment() {
 async function removeComment(commentId) {
   if (!game.value || !window.confirm('确定删除这条评论吗？')) return
   actionError.value = ''
-  try { await deleteGameComment(game.value.id, commentId) } catch (error) { actionError.value = error.message }
+  try {
+    await deleteGameComment(game.value.id, commentId)
+  } catch (error) {
+    actionError.value = error.message
+  }
 }
 </script>

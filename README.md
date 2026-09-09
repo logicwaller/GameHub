@@ -51,7 +51,16 @@ and analytics tables. Execute it before starting the API:
 
 ```powershell
 cd backend
-mysql -u root -p < schema.sql
+Get-Content -Raw .\schema.sql | mysql -u root -p
+```
+
+Games use one required primary type (`ARG/WIG`, `现实互动解谜`, `网页互动游戏`,
+`网页解谜`, or `互动叙事`) plus up to 12 optional tags. The schema creates the
+`tags` and `game_tags` tables for this relationship. To remove all existing
+game data while keeping users and forum data, stop the backend and run:
+
+```powershell
+Get-Content -Raw .\reset_game_data.sql | mysql -u root -p
 ```
 
 
