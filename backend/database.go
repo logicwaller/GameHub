@@ -65,59 +65,6 @@ func openDatabase() (*sql.DB, error) {
 	return db, nil
 }
 
-func migratePhaseThree(db *sql.DB) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS kafka_processed_events (
-			event_id VARCHAR(64) PRIMARY KEY,
-			topic VARCHAR(120) NOT NULL,
-			processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS search_documents (
-			entity_type VARCHAR(32) NOT NULL,
-			entity_id BIGINT UNSIGNED NOT NULL,
-			title VARCHAR(200) NOT NULL,
-			content TEXT NOT NULL,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			PRIMARY KEY (entity_type, entity_id),
-			FULLTEXT KEY idx_search_documents_text (title, content)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS moderation_records (
-			entity_type VARCHAR(32) NOT NULL,
-			entity_id BIGINT UNSIGNED NOT NULL,
-			status VARCHAR(20) NOT NULL,
-			reason VARCHAR(255) NOT NULL DEFAULT '',
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			PRIMARY KEY (entity_type, entity_id)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS notifications (
-			id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-			user_id INT NOT NULL,
-			type VARCHAR(40) NOT NULL,
-			content VARCHAR(500) NOT NULL,
-			is_read BOOLEAN NOT NULL DEFAULT FALSE,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			INDEX idx_notifications_user_created (user_id, created_at),
-			CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS game_analytics_daily (
-			game_id INT NOT NULL,
-			stat_date DATE NOT NULL,
-			plays INT NOT NULL DEFAULT 0,
-			likes INT NOT NULL DEFAULT 0,
-			favorites INT NOT NULL DEFAULT 0,
-			comments INT NOT NULL DEFAULT 0,
-			PRIMARY KEY (game_id, stat_date),
-			CONSTRAINT fk_game_analytics_daily_game FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE CASCADE
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func registerUser(db *sql.DB, username, email, password string) (user, error) {
 	result, err := db.Exec(`INSERT INTO users (username, email, password) VALUES (?, ?, ?)`, username, email, password)
 	if err != nil {
@@ -165,6 +112,31 @@ func listGames(db *sql.DB, authorID *int) ([]gameRecord, error) {
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func searchGameIDs(db *sql.DB, query string) (map[int]bool, error) {
+	rows, err := db.Query(`SELECT entity_id FROM search_documents WHERE entity_type = 'game' AND (title LIKE ? OR content LIKE ?)`, "%"+query+"%", "%"+query+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make(map[int]bool)
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+func rebuildSearchDocuments(db *sql.DB) error {
+	if _, err := db.Exec(`INSERT INTO search_documents (entity_type, entity_id, title, content) SELECT 'game', id, title, description FROM games ON DUPLICATE KEY UPDATE title=VALUES(title), content=VALUES(content)`); err != nil {
+		return err
+	}
+	_, err := db.Exec(`INSERT INTO search_documents (entity_type, entity_id, title, content) SELECT 'post', id, title, body FROM posts ON DUPLICATE KEY UPDATE title=VALUES(title), content=VALUES(content)`)
+	return err
 }
 
 func findGame(db *sql.DB, id int) (gameRecord, error) {
@@ -220,8 +192,55 @@ func gameDailyAnalytics(db *sql.DB, authorID int, gameID *int, days int) ([]dail
 	return items, rows.Err()
 }
 
+func backfillDailyAnalytics(db *sql.DB) error {
+	const backfillName = "historical_daily_v1"
+
+	var completed bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM analytics_backfill_state WHERE name = ?)`, backfillName).Scan(&completed); err != nil {
+		return err
+	}
+	if completed {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`INSERT INTO game_analytics_daily (game_id, stat_date, plays)
+		SELECT game_id, DATE(played_at), COUNT(*) FROM game_play_events
+		GROUP BY game_id, DATE(played_at)
+		ON DUPLICATE KEY UPDATE plays = VALUES(plays)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO game_analytics_daily (game_id, stat_date, likes)
+		SELECT game_id, DATE(created_at), COUNT(*) FROM game_likes
+		GROUP BY game_id, DATE(created_at)
+		ON DUPLICATE KEY UPDATE likes = GREATEST(likes, VALUES(likes))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO game_analytics_daily (game_id, stat_date, favorites)
+		SELECT game_id, DATE(created_at), COUNT(*) FROM game_favorites
+		GROUP BY game_id, DATE(created_at)
+		ON DUPLICATE KEY UPDATE favorites = GREATEST(favorites, VALUES(favorites))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO game_analytics_daily (game_id, stat_date, comments)
+		SELECT game_id, DATE(created_at), COUNT(*) FROM game_comments
+		GROUP BY game_id, DATE(created_at)
+		ON DUPLICATE KEY UPDATE comments = GREATEST(comments, VALUES(comments))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO analytics_backfill_state (name) VALUES (?)`, backfillName); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func userNotifications(db *sql.DB, userID int) ([]map[string]any, error) {
-	rows, err := db.Query(`SELECT id, type, content, is_read, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30`, userID)
+	rows, err := db.Query(`SELECT id, type, content, target_type, target_id, is_read, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -229,14 +248,35 @@ func userNotifications(db *sql.DB, userID int) ([]map[string]any, error) {
 	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var id int64
-		var eventType, content, createdAt string
+		var eventType, content, targetType, createdAt string
+		var targetID sql.NullInt64
 		var isRead bool
-		if err := rows.Scan(&id, &eventType, &content, &isRead, &createdAt); err != nil {
+		if err := rows.Scan(&id, &eventType, &content, &targetType, &targetID, &isRead, &createdAt); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"id": id, "type": eventType, "content": content, "read": isRead, "createdAt": createdAt})
+		item := map[string]any{"id": id, "type": eventType, "content": content, "read": isRead, "createdAt": createdAt, "targetType": targetType}
+		if targetID.Valid {
+			item["targetId"] = targetID.Int64
+		}
+		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func markNotificationRead(db *sql.DB, userID int, notificationID int64) error {
+	result, err := db.Exec(`UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?`, notificationID, userID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func markAllNotificationsRead(db *sql.DB, userID int) error {
+	_, err := db.Exec(`UPDATE notifications SET is_read = TRUE WHERE user_id = ? AND is_read = FALSE`, userID)
+	return err
 }
 
 func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) {
@@ -332,11 +372,17 @@ func createPost(db *sql.DB, title, body, author string, userID int) (postRecord,
 	return findPost(db, id)
 }
 
-func createPostReply(db *sql.DB, postID int64, text, author string, userID int) (postRecord, error) {
-	if _, err := db.Exec(`INSERT INTO post_replies (post_id, user_id, author_name, content) VALUES (?, ?, ?, ?)`, postID, userID, author, text); err != nil {
-		return postRecord{}, err
+func createPostReply(db *sql.DB, postID int64, text, author string, userID int) (postRecord, int64, error) {
+	result, err := db.Exec(`INSERT INTO post_replies (post_id, user_id, author_name, content) VALUES (?, ?, ?, ?)`, postID, userID, author, text)
+	if err != nil {
+		return postRecord{}, 0, err
 	}
-	return findPost(db, postID)
+	replyID, err := result.LastInsertId()
+	if err != nil {
+		return postRecord{}, 0, err
+	}
+	post, err := findPost(db, postID)
+	return post, replyID, err
 }
 
 func firstRune(value string) string {
@@ -447,6 +493,7 @@ func deleteGame(db *sql.DB, gameID int) error {
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return sql.ErrNoRows
 	}
+	_, _ = db.Exec(`DELETE FROM search_documents WHERE entity_type = 'game' AND entity_id = ?`, gameID)
 	return nil
 }
 
@@ -470,6 +517,7 @@ func deletePost(db *sql.DB, postID int64) error {
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return sql.ErrNoRows
 	}
+	_, _ = db.Exec(`DELETE FROM search_documents WHERE entity_type = 'post' AND entity_id = ?`, postID)
 	return nil
 }
 

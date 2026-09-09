@@ -110,3 +110,122 @@ mark {
   background: rgb(212 243 74 / 22%);
   color: #d4f34a;
 }
+
+.notification-link {
+  position: relative;
+  color: #c4cbcd;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.notification-link i,
+.notification-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d4f34a;
+}
+
+.notification-link i {
+  position: absolute;
+  top: -2px;
+  right: -5px;
+}
+
+.notification-read-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 13px;
+  border: 1px solid #3a4141;
+  border-radius: 4px;
+  background: rgb(25 28 30 / 72%);
+  color: #aeb5b7;
+  font: 600 12px Manrope, Arial, sans-serif;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: border-color .2s, background-color .2s, color .2s, transform .2s;
+}
+
+.notification-read-all span {
+  display: grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+  border: 1px solid currentcolor;
+  border-radius: 50%;
+  color: #d4f34a;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.notification-read-all:hover {
+  border-color: #78894a;
+  background: rgb(212 243 74 / 10%);
+  color: #e7ecec;
+  transform: translateY(-1px);
+}
+
+.notification-read-all:focus-visible {
+  outline: 2px solid #d4f34a;
+  outline-offset: 3px;
+}
+
+.notification-read-all:active {
+  transform: translateY(0);
+}
+
+.notification-list {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-group {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-group + .notification-group {
+  margin-top: 28px;
+}
+
+.notification-group h2 {
+  margin: 0 0 3px;
+  color: #8d9698;
+  font: 11px 'DM Mono', monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.notification-item {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 12px;
+  width: 100%;
+  padding: 17px;
+  border: 1px solid #2b2f30;
+  border-radius: 6px;
+  background: #191c1e;
+  color: #aeb5b7;
+  cursor: pointer;
+  text-align: left;
+}
+
+.notification-item > span:last-child {
+  display: grid;
+  gap: 5px;
+}
+
+.notification-item strong {
+  color: #f0f2f2;
+  font-size: 13px;
+}
+
+.notification-item small {
+  color: #747c7d;
+  font: 10px 'DM Mono', monospace;
+}
+
+.notification-item:not(.unread) .notification-dot {
+  opacity: 0;
+}
