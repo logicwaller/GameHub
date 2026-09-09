@@ -4,7 +4,10 @@
       <!-- 侧边栏：历史对话 -->
       <aside class="agent-sidebar">
         <div class="sidebar-header">
-          <h2><span class="brand-mark">A</span> AI 攻略助手</h2>
+          <h2>
+            <span class="brand-mark">A</span>
+            <span>AI 攻略助手</span>
+          </h2>
           <button class="new-chat-btn" @click="newChat">
             <span>+</span> 新对话
           </button>
@@ -22,9 +25,16 @@
               <strong>{{ chat.title }}</strong>
               <small>{{ chat.updatedAt }}</small>
             </div>
-            <button class="history-delete" @click.stop="deleteChat(chat.id)">✕</button>
+            <button
+              class="history-delete"
+              @click.stop="deleteChat(chat.id)"
+            >
+              ✕
+            </button>
           </div>
-          <p v-if="!chatHistory.length" class="empty-history">暂无历史对话</p>
+          <p v-if="historyLoading" class="empty-history">正在加载历史对话...</p>
+          <p v-else-if="error" class="empty-history">{{ error }}</p>
+          <p v-else-if="!chatHistory.length" class="empty-history">暂无历史对话</p>
         </div>
       </aside>
 
@@ -32,7 +42,12 @@
       <main class="agent-main">
         <!-- 消息列表 -->
         <div class="message-list" ref="messageList">
-          <div v-for="(msg, idx) in currentMessages" :key="idx" class="message" :class="msg.role">
+          <div
+            v-for="(msg, idx) in currentMessages"
+            :key="msg.id || `${msg.role}-${idx}`"
+            class="message"
+            :class="msg.role"
+          >
             <div class="message-avatar">
               <span v-if="msg.role === 'user'">{{ userAvatar }}</span>
               <span v-else class="bot-avatar">A</span>
@@ -43,7 +58,10 @@
           </div>
           <p v-if="!currentMessages.length" class="empty-chat">
             开始向 AI 攻略助手提问吧！<br>
-            例如：<em @click="sendQuickQuestion('这个游戏怎么快速上手？')">"这个游戏怎么快速上手？"</em>
+            例如：
+            <em @click="sendQuickQuestion('这个游戏怎么快速上手？')">
+              "这个游戏怎么快速上手？"
+            </em>
           </p>
         </div>
 
@@ -55,7 +73,11 @@
             @keydown.enter.prevent="sendMessage"
             :disabled="loading"
           />
-          <button class="primary" @click="sendMessage" :disabled="loading || !inputText.trim()">
+          <button
+            class="primary"
+            @click="sendMessage"
+            :disabled="loading || !inputText.trim()"
+          >
             <span v-if="loading">● ● ●</span>
             <span v-else>发送</span>
           </button>
@@ -66,58 +88,92 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick } from 'vue'
-import { state } from '../stores'
+import {
+  computed,
+  nextTick,
+  onMounted,
+  ref
+} from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  createAgentConversation,
+  loadAgentConversations,
+  loadAgentMessages,
+  removeAgentConversation,
+  state
+} from '../stores'
 
+const router = useRouter()
 const inputText = ref('')
 const loading = ref(false)
+const historyLoading = ref(false)
+const error = ref('')
 const messageList = ref(null)
 const currentChatId = ref(null)
+const chatHistory = ref([])
+const chatMessages = ref({})
 
 const userAvatar = computed(() => state.user?.username?.[0] || '访')
-
-// 历史对话数据
-const chatHistory = ref([
-  { id: 1, title: '艾尔登法环入门攻略', updatedAt: '2026-09-01' },
-  { id: 2, title: '星露谷物语耕种技巧', updatedAt: '2026-08-30' }
-])
-
-// 每个对话的消息
-const chatMessages = ref({
-  1: [
-    { role: 'assistant', text: '你好！欢迎来到艾尔登法环攻略助手，有什么可以帮你的？' },
-    { role: 'user', text: '开局选什么职业比较好？' },
-    { role: 'assistant', text: '对于新手玩家，推荐选择**流浪骑士**（Vagabond），初始生命力高、有100%物防盾，容错率大。如果想玩法系，可以选择**观星者**（Astrologer），初始智力高、自带远程魔法。' }
-  ],
-  2: [
-    { role: 'assistant', text: '嗨！星露谷物语攻略助手为你服务~' }
-  ]
+const currentMessages = computed(() => {
+  return chatMessages.value[currentChatId.value] || []
 })
 
-if (!currentChatId.value && chatHistory.value.length) {
-  currentChatId.value = chatHistory.value[0].id
+async function loadMessages(conversationID) {
+  if (!conversationID || chatMessages.value[conversationID]) return
+  try {
+    chatMessages.value[conversationID] = await loadAgentMessages(conversationID)
+    await scrollToBottom()
+  } catch (err) {
+    error.value = err.message || '读取消息失败'
+  }
 }
 
-const currentMessages = computed(() => chatMessages.value[currentChatId.value] || [])
+async function loadHistory() {
+  historyLoading.value = true
+  error.value = ''
+  try {
+    chatHistory.value = await loadAgentConversations()
+    if (chatHistory.value.length) {
+      currentChatId.value = chatHistory.value[0].id
+      await loadMessages(currentChatId.value)
+    }
+  } catch (err) {
+    error.value = err.message || '读取对话历史失败'
+  } finally {
+    historyLoading.value = false
+  }
+}
 
-function newChat() {
-  const id = Date.now()
-  chatHistory.value.unshift({ id, title: '新对话', updatedAt: new Date().toLocaleDateString() })
-  chatMessages.value[id] = [{ role: 'assistant', text: '你好！我是AI攻略助手，有什么游戏问题需要帮忙吗？' }]
+async function newChat() {
+  error.value = ''
+  try {
+    const conversation = await createAgentConversation()
+    chatHistory.value.unshift(conversation)
+    chatMessages.value[conversation.id] = []
+    currentChatId.value = conversation.id
+  } catch (err) {
+    error.value = err.message || '创建对话失败'
+  }
+}
+
+async function switchChat(id) {
   currentChatId.value = id
+  error.value = ''
+  await loadMessages(id)
+  await scrollToBottom()
 }
 
-function switchChat(id) {
-  currentChatId.value = id
-}
-
-function deleteChat(id) {
-  const idx = chatHistory.value.findIndex(c => c.id === id)
-  if (idx < 0) return
-  chatHistory.value.splice(idx, 1)
-  delete chatMessages.value[id]
-  if (currentChatId.value === id) {
-    currentChatId.value = chatHistory.value.length ? chatHistory.value[0].id : null
+async function deleteChat(id) {
+  try {
+    await removeAgentConversation(id)
+    delete chatMessages.value[id]
+    chatHistory.value = chatHistory.value.filter((chat) => chat.id !== id)
+    if (currentChatId.value === id) {
+      currentChatId.value = chatHistory.value[0]?.id || null
+      if (currentChatId.value) await loadMessages(currentChatId.value)
+    }
+  } catch (err) {
+    error.value = err.message || '删除对话失败'
   }
 }
 
@@ -125,69 +181,84 @@ async function sendMessage() {
   const text = inputText.value.trim()
   if (!text || loading.value) return
   inputText.value = ''
+  error.value = ''
 
-  if (!currentChatId.value) newChat()
+  if (!currentChatId.value) {
+    await newChat()
+  }
   const chatId = currentChatId.value
-
+  if (!chatId) return
+  if (!chatMessages.value[chatId]) chatMessages.value[chatId] = []
   chatMessages.value[chatId].push({ role: 'user', text })
-  scrollToBottom()
-
+  const assistantMessage = { role: 'assistant', text: '' }
+  chatMessages.value[chatId].push(assistantMessage)
+  const messageIndex = chatMessages.value[chatId].length - 1
+  await scrollToBottom()
   loading.value = true
 
   try {
-    const response = await fetch('http://localhost:8080/api/agent/chat', {
+    const response = await fetch('/api/agent/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('gamehub_token')}`
       },
-      body: JSON.stringify({ question: text }),
+      body: JSON.stringify({ conversationId: chatId, question: text })
     })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      throw new Error(`API 错误 (${response.status}): ${errorText}`)
+    if (response.status === 401) {
+      router.replace('/login')
+      throw new Error('登录已失效，请重新登录')
     }
-
-    const msgIndex = chatMessages.value[chatId].length
-    chatMessages.value[chatId].push({ role: 'assistant', text: '' })
-    scrollToBottom()
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.message || `API 错误 (${response.status})`)
+    }
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
+    let buffer = ''
     let fullText = ''
-
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-
-      const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n')
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const content = line.replace('data: ', '')
-          if (content === '[DONE]') {
-            break
-          }
-          fullText += content
-          chatMessages.value[chatId][msgIndex].text = fullText
-          scrollToBottom()
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split('\n\n')
+      buffer = events.pop() || ''
+      for (const event of events) {
+        const line = event.split('\n').find((item) => item.startsWith('data: '))
+        if (!line) continue
+        const payload = line.slice(6)
+        if (payload === '[DONE]') continue
+        try {
+          fullText += JSON.parse(payload)
+        } catch {
+          fullText += payload
         }
+        chatMessages.value[chatId][messageIndex].text = fullText
+        scrollToBottom()
       }
     }
-
-    const chat = chatHistory.value.find(c => c.id === chatId)
+    const chat = chatHistory.value.find((item) => item.id === chatId)
     if (chat && chat.title === '新对话') {
-      chat.title = text.length > 12 ? text.slice(0, 12) + '...' : text
+      chat.title = text.length > 12 ? `${text.slice(0, 12)}...` : text
     }
-
-  } catch (error) {
-    console.error('AI 请求失败:', error)
-    chatMessages.value[chatId].push({
-      role: 'assistant',
-      text: `❌ 连接失败: ${error.message}\n\n请确认后端已启动: cd backend && go run main.go`
-    })
-    scrollToBottom()
+    if (chat) {
+      chat.updatedAt = new Date().toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+      chatHistory.value = [
+        chat,
+        ...chatHistory.value.filter((item) => item.id !== chatId)
+      ]
+    }
+  } catch (err) {
+    console.error('AI 请求失败:', err)
+    chatMessages.value[chatId][messageIndex].text = `❌ ${err.message || '请求失败'}`
+    error.value = err.message || 'AI 请求失败'
   } finally {
     loading.value = false
   }
@@ -195,16 +266,24 @@ async function sendMessage() {
 
 function sendQuickQuestion(text) {
   inputText.value = text
-  sendMessage()
+  void sendMessage()
 }
 
 function scrollToBottom() {
-  nextTick(() => {
+  return nextTick(() => {
     if (messageList.value) {
       messageList.value.scrollTop = messageList.value.scrollHeight
     }
   })
 }
+
+onMounted(() => {
+  if (!state.user || !localStorage.getItem('gamehub_token')) {
+    router.replace('/login')
+    return
+  }
+  void loadHistory()
+})
 </script>
 
 <style scoped>

@@ -135,6 +135,48 @@ export async function refreshHomeData() {
   ])
 }
 
+async function agentRequest(path, options = {}) {
+  requireLogin()
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${localStorage.getItem('gamehub_token')}`,
+      ...(options.headers || {})
+    }
+  })
+  if (response.status === 401) {
+    expireSession()
+  }
+  const data = response.status === 204 ? {} : await response.json()
+  if (!response.ok) {
+    throw new Error(data.message || 'AI 对话操作失败')
+  }
+  return data
+}
+
+export async function loadAgentConversations() {
+  const data = await agentRequest('/api/agent/conversations')
+  return data.items || []
+}
+
+export async function createAgentConversation(title = '新对话') {
+  const data = await agentRequest('/api/agent/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title })
+  })
+  return data.conversation
+}
+
+export async function loadAgentMessages(conversationID) {
+  const data = await agentRequest(`/api/agent/conversations/${conversationID}/messages`)
+  return data.items || []
+}
+
+export async function removeAgentConversation(conversationID) {
+  await agentRequest(`/api/agent/conversations/${conversationID}`, { method: 'DELETE' })
+}
+
 export async function loadGameComments(id) {
   const response = await fetch(`/api/games/${id}/comments`)
   const data = await response.json()

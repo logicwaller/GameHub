@@ -1,70 +1,106 @@
 package agent
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
-
-	"github.com/yankeguo/zhipu"
+	"net/http"
+	"strings"
 )
 
-// ZhipuClient 智谱AI客户端
-type ZhipuClient struct {
-	client *zhipu.Client
+// Client 是 Agent 的模型客户端。
+type Client struct {
+	apiKey     string
+	endpoint   string
+	httpClient *http.Client
 }
 
-// NewZhipuClient 创建客户端
-func NewZhipuClient(apiKey string) *ZhipuClient {
-	return &ZhipuClient{
-		client: zhipu.NewClient(zhipu.WithAPIKey(apiKey)),
+func NewClient(apiKey string) *Client {
+	return &Client{
+		apiKey:     strings.TrimSpace(apiKey),
+		endpoint:   "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+		httpClient: &http.Client{},
 	}
 }
 
-// StreamChat 流式对话
-func (z *ZhipuClient) StreamChat(ctx context.Context, question string) (<-chan string, error) {
-	// 1. 构建请求
-	req := &zhipu.ChatCompletionRequest{
-		Model: "glm-4-flash",
-		Messages: []zhipu.ChatCompletionMessage{
-			{
-				Role:    "user",
-				Content: question,
-			},
-		},
-		Stream: true,
+// StreamChat 返回模型生成的文本片段。
+func (c *Client) StreamChat(ctx context.Context, question string) (<-chan string, error) {
+	if c == nil || c.apiKey == "" {
+		return nil, fmt.Errorf("智谱 API Key 未设置")
 	}
-
-	// 2. 发起流式请求
-	stream, err := z.client.CreateChatCompletionStream(ctx, req)
+	body, err := json.Marshal(map[string]any{
+		"model": "glm-4-flash",
+		"messages": []map[string]string{{
+			"role": "user", "content": question,
+		}},
+		"stream": true,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("调用智谱AI失败: %w", err)
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("API 返回错误 (状态码 %d): %s", resp.StatusCode, string(data))
 	}
 
-	// 3. 创建channel，用于传递回答片段
-	chunkChan := make(chan string)
-
+	chunks := make(chan string)
 	go func() {
-		defer close(chunkChan)
-		defer stream.Close()
-
+		defer close(chunks)
+		defer resp.Body.Close()
+		reader := bufio.NewReader(resp.Body)
 		for {
-			resp, err := stream.Recv()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				chunkChan <- fmt.Sprintf("AI出错了: %v", err)
-				break
-			}
-			// 提取内容
-			if len(resp.Choices) > 0 {
-				content := resp.Choices[0].Delta.Content
-				if content != "" {
-					chunkChan <- content
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				if readErr != io.EOF && ctx.Err() == nil {
+					select {
+					case chunks <- fmt.Sprintf("读取流式数据出错: %v", readErr):
+					case <-ctx.Done():
+					}
 				}
+				return
+			}
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			if payload == "[DONE]" {
+				return
+			}
+			var event struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal([]byte(payload), &event) != nil || len(event.Choices) == 0 {
+				continue
+			}
+			content := event.Choices[0].Delta.Content
+			if content == "" {
+				continue
+			}
+			select {
+			case chunks <- content:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
-
-	return chunkChan, nil
+	return chunks, nil
 }

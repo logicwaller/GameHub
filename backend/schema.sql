@@ -185,6 +185,28 @@ CREATE TABLE IF NOT EXISTS analytics_backfill_state (
   completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+CREATE TABLE IF NOT EXISTS agent_conversations (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  user_id INT NOT NULL,
+  title VARCHAR(200) NOT NULL DEFAULT '新对话',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_agent_conversations_user
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+  INDEX idx_agent_conversations_user_updated (user_id, updated_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  conversation_id BIGINT UNSIGNED NOT NULL,
+  role VARCHAR(20) NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_agent_messages_conversation
+    FOREIGN KEY (conversation_id) REFERENCES agent_conversations (id) ON DELETE CASCADE,
+  INDEX idx_agent_messages_conversation_created (conversation_id, created_at)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
 -- 为旧的数据库兜底，若相应表没有新添加的字段则创建字段。
 DELIMITER //
 

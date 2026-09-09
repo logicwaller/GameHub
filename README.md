@@ -1,11 +1,11 @@
 # GameHub
 
-GameHub is a web game discovery platform. The repository is organized as a small monorepo:
+GameHub 是一个网页游戏发现与交流平台。本项目采用前后端分离的单体仓库结构：
 
 - `backend/` Go + Gin API（MySQL 主库、Redis 缓存、Kafka 异步事件）
-- `frontend/` Vue 3 + Vite single-page application
+- `frontend/` Vue 3 + Vite 前端单页应用
 
-## Run locally
+## 本地运行
 
 ```powershell
 cd backend
@@ -16,64 +16,52 @@ npm install
 npm run dev
 ```
 
-The API listens on `http://localhost:8080`; Vite serves the UI on `http://localhost:5173` and proxies `/api` requests to the API.
+后端 API 默认监听 `http://localhost:8080`；Vite 前端默认运行在
+`http://localhost:5173`，并将 `/api` 请求代理到后端。
 
-## MySQL configuration
+## MySQL 配置
 
-The backend uses MySQL for users and games. Import the complete schema before
-starting the API, then copy `backend/.env.example` to `backend/.env` and fill
-in your values:
+后端使用 MySQL 保存用户、游戏及其他业务数据。启动 API 前请先导入完整数据库
+结构，然后将 `backend/.env.example` 复制为 `backend/.env` 并填写配置：
 
 ```powershell
 cd backend
 Copy-Item .env.example .env
 ```
 
-The backend uses `godotenv` to load `.env` automatically when it starts. Run `go run .` from the `backend` directory so the file can be found. Environment variables already set in the shell take precedence over values loaded from `.env`.
+后端启动时通过 `godotenv` 自动加载 `.env`。请在 `backend` 目录执行
+`go run .`，这样程序才能找到同目录下的配置文件。命令行中已经设置的环境变量
+优先级高于 `.env` 中的同名变量。
 
-If you do not want to use a `.env` file, you can set the variables directly in PowerShell:
-
-```powershell
-cd backend
-go mod tidy
-$env:MYSQL_HOST = "127.0.0.1"
-$env:MYSQL_PORT = "3306"
-$env:MYSQL_USER = "root"
-$env:MYSQL_PASSWORD = "your-password"
-$env:MYSQL_DATABASE = "gamehub"
-$env:JWT_SECRET = "use-a-long-random-value"
-go run .
-```
-
-`backend/schema.sql` is the only place that creates or upgrades the database
-schema. It contains all required tables, including the Kafka, notification,
-and analytics tables. Execute it before starting the API:
+`backend/schema.sql` 是创建或升级数据库结构的唯一文件，其中包含所有必需的表，
+包括 Kafka 事件、通知和数据分析相关表。启动 API 前执行：
 
 ```powershell
 cd backend
 Get-Content -Raw .\schema.sql | mysql -u root -p
 ```
 
-Games use one required primary type (`ARG/WIG`, `现实互动解谜`, `网页互动游戏`,
-`网页解谜`, or `互动叙事`) plus up to 12 optional tags. The schema creates the
-`tags` and `game_tags` tables for this relationship. To remove all existing
-game data while keeping users and forum data, stop the backend and run:
+每个游戏必须选择一个主类型（`ARG/WIG`、`现实互动解谜`、`网页互动游戏`、
+`网页解谜`或`互动叙事`），并可添加最多 12 个标签。数据库通过 `tags` 和
+`game_tags` 表保存标签关系。如果需要删除全部游戏数据但保留用户和论坛数据，
+请先停止后端，再执行：
 
 ```powershell
 Get-Content -Raw .\reset_game_data.sql | mysql -u root -p
 ```
 
 
-## Redis and Kafka
+## Redis 与 Kafka
 
-Start the phase-three middleware with Docker Compose:
+使用 Docker Compose 启动第三阶段所需的中间件：
 
 ```powershell
 cd GameHub
 docker compose up -d redis kafka
 ```
 
-Compose is configured for a single-node Kafka broker (including replication settings for the internal consumer-offset topic). After changing Kafka settings, recreate only the Kafka container and its data volume:
+Compose 已配置为单节点 Kafka Broker，并设置了内部消费者偏移量主题所需的副本参数。
+修改 Kafka 配置后，只需重新创建 Kafka 容器及其数据卷：
 
 ```powershell
 docker compose stop kafka
@@ -82,43 +70,52 @@ docker volume rm gamehub_kafka_data
 docker compose up -d kafka
 ```
 
-The backend uses these environment variables (the defaults point to the local containers):
-
-```text
-REDIS_ADDR=127.0.0.1:6379
-REDIS_PASSWORD=
-REDIS_DB=0
-KAFKA_BROKERS=127.0.0.1:9092
-KAFKA_GAME_PLAY_TOPIC=game.play
-KAFKA_SEARCH_TOPIC=search.sync
-KAFKA_INTERACTION_TOPIC=interaction.event
-KAFKA_NOTIFICATION_TOPIC=notification
-```
-
-The development Compose configuration enables automatic topic creation. The backend also ensures the business topics and their `.dlq` dead-letter topics exist at startup. Restart Kafka once after pulling the updated configuration:
+开发环境的 Compose 配置已开启自动创建主题。后端启动时还会检查业务主题及其
+`.dlq` 死信主题是否存在。拉取最新配置后，重新启动一次 Kafka：
 
 ```powershell
 docker compose up -d --force-recreate kafka
 ```
 
-Phase-three endpoints:
+第三阶段相关接口：
 
-- `GET /api/games?q=keyword&sort=plays|likes` searches and sorts games.
-- `GET /api/games/:id` uses a one-hour Redis detail cache.
-- `GET /api/games/hot` returns the Redis hot-game ranking.
-- `POST /api/games/:id/play` publishes a `game.play` event; the Kafka consumer asynchronously increments play count and updates the ranking. If Kafka is unavailable, the API automatically falls back to synchronous MySQL update.
-- Requests are limited to 120 per IP per minute when Redis is available.
+- `GET /api/games?q=keyword&sort=plays|likes`：搜索并排序游戏。
+- `GET /api/games/:id`：使用 Redis 缓存游戏详情，缓存时间为一小时。
+- `GET /api/games/hot`：返回 Redis 中的热门游戏排行榜。
+- `POST /api/games/:id/play`：发布 `game.play` 事件，由 Kafka 消费者异步增加游玩量并更新排行榜。Kafka 不可用时，API 会自动降级为同步写入 MySQL。
+- Redis 可用时，每个 IP 每分钟最多请求 120 次。
 
-Additional phase-three behaviour:
+第三阶段的其他功能：
 
-- `schema.sql` creates the phase-three tables: processed Kafka events, search documents, notifications, daily game analytics, and the one-time analytics-backfill marker.
-- Kafka consumers update the local search-document index, store notifications, and aggregate interaction metrics by day.
-- `GET /api/games/favorites/rank` returns the top 20 games ranked by favorite count, using Redis with a MySQL fallback.
-- On startup, the backend performs a one-time historical backfill of daily analytics from existing play, like, favorite, and comment records. Its completion is recorded in `analytics_backfill_state`.
-- `POST /api/auth/logout` blacklists the current JWT in Redis; login/register endpoints have a stricter 10-per-minute IP limit.
-- Authenticated write requests may provide an `Idempotency-Key` header to reject accidental retries for two minutes.
-- `GET /api/me/relations`, `GET /api/notifications` and `GET /api/games/analytics?days=7&game_id={id}` provide cached interaction state, notifications and real daily analytics data.
+- `schema.sql` 创建 Kafka 已处理事件、搜索文档、通知、游戏日统计和一次性统计回填标记等表。
+- Kafka 消费者会更新本地搜索文档、保存通知，并按天汇总互动数据。
+- `GET /api/games/favorites/rank`：返回收藏量最高的 20 个游戏；Redis 不可用时使用 MySQL 查询。
+- 后端启动时会根据已有游玩、点赞、收藏和评论记录回填历史日统计，完成后写入 `analytics_backfill_state`。
+- `POST /api/auth/logout`：将当前 JWT 加入 Redis 黑名单；登录和注册接口限制为每个 IP 每分钟 10 次。
+- 已登录用户的写请求可以携带 `Idempotency-Key` 请求头，避免两分钟内的重复提交。
+- `GET /api/me/relations`、`GET /api/notifications` 和 `GET /api/games/analytics?days=7&game_id={id}` 分别提供用户互动状态、通知和真实的日统计数据。
 
-Administrators can inspect and replay failed Kafka messages from the “Kafka 死信队列” section of the admin page. The corresponding APIs are `GET /api/admin/kafka/dlq/{topic}` and `POST /api/admin/kafka/dlq/{topic}/{eventID}/replay`.
+## AI 攻略助手与问答历史
 
-Redis failures fail open, so MySQL-backed pages continue to work. Kafka is connected directly through the Go client; the backend does not need access to the Docker CLI. The broker only needs to be reachable at `KAFKA_BROKERS`.
+AI 攻略助手要求用户登录，并通过 `ZHIPU_API_KEY` 调用智谱模型。执行最新
+`schema.sql` 后，问答历史会持久化到 MySQL：`agent_conversations` 保存会话，
+`agent_messages` 保存用户问题和 AI 回复，且每个用户只能访问自己的会话。
+
+相关接口：
+
+- `GET /api/agent/conversations`：读取当前用户的会话列表。
+- `POST /api/agent/conversations`：创建新会话。
+- `GET /api/agent/conversations/:id/messages`：读取会话消息。
+- `DELETE /api/agent/conversations/:id`：删除会话及其消息。
+- `POST /api/agent/chat`：提交问题并通过 SSE 流式返回回答，同时写入 MySQL。
+
+当前 Agent 已实现问答和历史记录持久化，但尚未实现方案中的游戏攻略知识库、
+Embedding 和向量检索（当前模型只接收用户本轮问题）。
+
+管理员可以在管理页面的“Kafka 死信队列”区域查看并重放失败的 Kafka 消息。
+对应接口为 `GET /api/admin/kafka/dlq/{topic}` 和
+`POST /api/admin/kafka/dlq/{topic}/{eventID}/replay`。
+
+Redis 故障时系统会自动降级，因此依赖 MySQL 的页面仍可正常使用。Kafka 由 Go
+客户端直接连接，后端不需要访问 Docker 命令行；只要 `KAFKA_BROKERS` 指向的
+Broker 可访问即可。
