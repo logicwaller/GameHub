@@ -14,7 +14,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
+	"context"
+	"io"
+	"bufio"
+	"bytes"
+	
+    
+	
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
@@ -222,6 +228,115 @@ func cachedRelations(db *sql.DB, cache *redisClient, userID int, table, keyPrefi
 	return items, nil
 }
 
+// ==================== AI Agent 相关（标准 HTTP 版本） ====================
+
+var zhipuAPIKey string
+
+func initZhipuClient(apiKey string) {
+    zhipuAPIKey = apiKey
+}
+
+func streamChatWithZhipu(ctx context.Context, question string) (<-chan string, error) {
+    if zhipuAPIKey == "" {
+        return nil, fmt.Errorf("智谱 API Key 未设置")
+    }
+
+    // 构建请求体
+    reqBody := map[string]interface{}{
+        "model": "glm-4-flash",
+        "messages": []map[string]string{
+            {
+                "role":    "user",
+                "content": question,
+            },
+        },
+        "stream": true,
+    }
+
+    jsonData, err := json.Marshal(reqBody)
+    if err != nil {
+        return nil, fmt.Errorf("构建请求失败: %w", err)
+    }
+
+    // 创建 HTTP 请求
+    url := "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
+    if err != nil {
+        return nil, fmt.Errorf("创建请求失败: %w", err)
+    }
+
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+zhipuAPIKey)
+
+    // 发送请求
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("请求失败: %w", err)
+    }
+
+    if resp.StatusCode != http.StatusOK {
+        body, _ := io.ReadAll(resp.Body)
+        resp.Body.Close()
+        return nil, fmt.Errorf("API 返回错误 (状态码 %d): %s", resp.StatusCode, string(body))
+    }
+
+    chunkChan := make(chan string)
+
+    go func() {
+        defer close(chunkChan)
+        defer resp.Body.Close()
+
+        reader := bufio.NewReader(resp.Body)
+        for {
+            line, err := reader.ReadString('\n')
+            if err != nil {
+                if err != io.EOF {
+                    chunkChan <- fmt.Sprintf("读取流式数据出错: %v", err)
+                }
+                break
+            }
+
+            line = strings.TrimSpace(line)
+            if !strings.HasPrefix(line, "data: ") {
+                continue
+            }
+
+            data := strings.TrimPrefix(line, "data: ")
+            if data == "[DONE]" {
+                break
+            }
+
+            var chunk map[string]interface{}
+            if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+                continue
+            }
+
+            choices, ok := chunk["choices"].([]interface{})
+            if !ok || len(choices) == 0 {
+                continue
+            }
+            choice, ok := choices[0].(map[string]interface{})
+            if !ok {
+                continue
+            }
+            delta, ok := choice["delta"].(map[string]interface{})
+            if !ok {
+                continue
+            }
+            content, ok := delta["content"].(string)
+            if !ok || content == "" {
+                continue
+            }
+
+            chunkChan <- content
+        }
+    }()
+
+    return chunkChan, nil
+}
+
+// ============================================================
 func main() {
 	// 获取env，默认使用同一目录下的.env文件
 	err := godotenv.Load()
@@ -244,6 +359,13 @@ func main() {
 
 	// 启动redis
 	cache := newRedisClient()
+  
+  //api
+	apiKey := os.Getenv("ZHIPU_API_KEY")
+	if apiKey == "" {
+    log.Fatal("请设置 ZHIPU_API_KEY 环境变量")
+	}
+	initZhipuClient(apiKey)
 
 	// 启动kafaka
 	if err := ensureKafkaTopics(); err != nil {
@@ -275,6 +397,46 @@ func main() {
 		}
 		c.Next()
 	})
+	    // ==================== AI Agent 路由 ====================
+    // 流式对话接口（SSE）
+    r.POST("/api/agent/chat", func(c *gin.Context) {
+        var req struct {
+            Question string `json:"question"`
+        }
+        if err := c.ShouldBindJSON(&req); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+            return
+        }
+        if req.Question == "" {
+            c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "问题不能为空"})
+            return
+        }
+
+        // 设置SSE响应头
+        c.Header("Content-Type", "text/event-stream")
+        c.Header("Cache-Control", "no-cache")
+        c.Header("Connection", "keep-alive")
+        c.Header("Access-Control-Allow-Origin", "*")
+
+        ctx := context.Background()
+
+        // 调用流式对话
+        chunkChan, err := streamChatWithZhipu(ctx, req.Question)
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+            return
+        }
+
+        // 转发给前端
+        for chunk := range chunkChan {
+            c.Writer.Write([]byte(fmt.Sprintf("data: %s\n\n", chunk)))
+            c.Writer.Flush()
+        }
+
+        c.Writer.Write([]byte("data: [DONE]\n\n"))
+        c.Writer.Flush()
+    })
+
 	r.GET("/api/health", func(c *gin.Context) {
 		if err := db.Ping(); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error"})

@@ -133,20 +133,64 @@ async function sendMessage() {
   scrollToBottom()
 
   loading.value = true
-  // 模拟 AI 回复（后续对接真实 API）
-  setTimeout(() => {
-    chatMessages.value[chatId].push({
-      role: 'assistant',
-      text: '这是一个模拟回复。后续接入后端 AI 接口后将返回真实攻略回答。'
+
+  try {
+    const response = await fetch('http://localhost:8080/api/agent/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ question: text }),
     })
-    // 更新标题
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`API 错误 (${response.status}): ${errorText}`)
+    }
+
+    const msgIndex = chatMessages.value[chatId].length
+    chatMessages.value[chatId].push({ role: 'assistant', text: '' })
+    scrollToBottom()
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let fullText = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value, { stream: true })
+      const lines = chunk.split('\n')
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const content = line.replace('data: ', '')
+          if (content === '[DONE]') {
+            break
+          }
+          fullText += content
+          chatMessages.value[chatId][msgIndex].text = fullText
+          scrollToBottom()
+        }
+      }
+    }
+
     const chat = chatHistory.value.find(c => c.id === chatId)
     if (chat && chat.title === '新对话') {
       chat.title = text.length > 12 ? text.slice(0, 12) + '...' : text
     }
-    loading.value = false
+
+  } catch (error) {
+    console.error('AI 请求失败:', error)
+    chatMessages.value[chatId].push({
+      role: 'assistant',
+      text: `❌ 连接失败: ${error.message}\n\n请确认后端已启动: cd backend && go run main.go`
+    })
     scrollToBottom()
-  }, 800)
+  } finally {
+    loading.value = false
+  }
 }
 
 function sendQuickQuestion(text) {
