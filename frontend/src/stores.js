@@ -135,6 +135,36 @@ export async function refreshHomeData() {
   ])
 }
 
+export async function loadGame(id) {
+  const response = await fetch(`/api/games/${id}`)
+  if (response.status === 404) {
+    const index = state.games.findIndex((game) => game.id === Number(id))
+    if (index >= 0) state.games.splice(index, 1)
+    return null
+  }
+  if (!response.ok) throw new Error('游戏接口不可用')
+  const data = await response.json()
+  const index = state.games.findIndex((game) => game.id === data.game.id)
+  if (index >= 0) state.games[index] = data.game
+  else state.games.push(data.game)
+  return data.game
+}
+
+function broadcastGameChange() {
+  try {
+    localStorage.setItem('gamehub_games_changed', String(Date.now()))
+  } catch {
+    // 本地存储不可用时，当前窗口的响应式状态仍会更新。
+  }
+}
+
+function removeGameFromLocalState(id) {
+  const gameIndex = state.games.findIndex((game) => game.id === id)
+  if (gameIndex >= 0) state.games.splice(gameIndex, 1)
+  const hotIndex = state.hotGames.findIndex((game) => game.id === id)
+  if (hotIndex >= 0) state.hotGames.splice(hotIndex, 1)
+}
+
 async function agentRequest(path, options = {}) {
   requireLogin()
   const response = await fetch(path, {
@@ -310,7 +340,24 @@ export async function addComment(id, text) {
 export async function addGame(game) {
   const data = await postAuth('/api/games', game)
   state.games.unshift(data.game)
+  broadcastGameChange()
   return data.game
+}
+
+export async function updateGame(id, game) {
+  const data = await postAuth(`/api/games/${id}`, game, 'PUT')
+  const index = state.games.findIndex((item) => item.id === id)
+  if (index >= 0) state.games[index] = data.game
+  const hotIndex = state.hotGames.findIndex((item) => item.id === id)
+  if (hotIndex >= 0) state.hotGames[hotIndex] = data.game
+  broadcastGameChange()
+  return data.game
+}
+
+export async function deleteOwnGame(id) {
+  await postAuth(`/api/games/${id}`, undefined, 'DELETE')
+  removeGameFromLocalState(id)
+  broadcastGameChange()
 }
 
 export async function recordGamePlay(id) {
@@ -326,8 +373,8 @@ export async function recordGamePlay(id) {
 
 export async function deleteGame(id) {
   await postAuth(`/api/admin/games/${id}`, undefined, 'DELETE')
-  const index = state.games.findIndex((game) => game.id === id)
-  if (index >= 0) state.games.splice(index, 1)
+  removeGameFromLocalState(id)
+  broadcastGameChange()
 }
 
 export async function deleteGameComment(gameId, commentId) {

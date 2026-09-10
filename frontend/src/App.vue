@@ -68,6 +68,9 @@ function syncAuthAcrossTabs(event) {
   if (event.key === 'gamehub_user') {
     syncUserFromStorage()
   }
+  if (event.key === 'gamehub_games_changed') {
+    void refreshHomeData()
+  }
 }
 
 function redirectToLogin() {

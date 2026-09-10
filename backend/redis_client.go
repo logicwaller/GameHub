@@ -152,6 +152,10 @@ func (r *redisClient) zadd(key string, score int, member string) {
 	_, _ = r.command("ZADD", key, strconv.Itoa(score), member)
 }
 
+func (r *redisClient) zrem(key, member string) {
+	_, _ = r.command("ZREM", key, member)
+}
+
 func (r *redisClient) hincrby(key, field string, delta int) {
 	_, _ = r.command("HINCRBY", key, field, strconv.Itoa(delta))
 }

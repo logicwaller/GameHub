@@ -12,7 +12,34 @@
 
     <div class="profile-grid">
       <div>
-        <div class="section-head">
+        <div class="section-head published-head">
+          <div>
+            <p class="eyebrow">YOUR GAMES</p>
+            <h2>我的游戏</h2>
+          </div>
+          <span class="count">{{ ownGames.length }} 款已发布</span>
+        </div>
+        <div v-if="ownGames.length" class="owned-game-list">
+          <article v-for="game in ownGames" :key="game.id" class="owned-game-row">
+            <RouterLink :to="`/games/${game.id}`" class="owned-game-link">
+              <div class="owned-game-cover" :style="coverStyle(game)">
+                <img v-if="game.cover" :src="game.cover" :alt="`${game.title} 封面`">
+                <span v-else>{{ game.icon }}</span>
+              </div>
+              <span>
+                <strong>{{ game.title }}</strong>
+                <small>{{ game.primaryType }} · {{ game.plays || 0 }} 次浏览</small>
+              </span>
+            </RouterLink>
+            <div class="owned-game-actions">
+              <button class="manage-button" @click="openEdit(game)">编辑</button>
+              <button class="manage-button danger-button" @click="removeGame(game)">删除</button>
+            </div>
+          </article>
+        </div>
+        <p v-else class="empty">还没有发布游戏，创建你的第一个作品吧。</p>
+
+        <div class="section-head collection-head">
           <div>
             <p class="eyebrow">YOUR COLLECTION</p>
             <h2>收藏的游戏</h2>
@@ -57,16 +84,16 @@
         <RouterLink class="secondary analytics-link" to="/profile/games">
           查看已发布游戏数据 →
         </RouterLink>
-        <button class="primary full" @click="showCreate = true">创建游戏 <span>＋</span></button>
+        <button class="primary full" @click="openCreate">创建游戏 <span>＋</span></button>
       </div>
     </div>
   </section>
 
-  <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
+  <div v-if="showCreate" class="modal-backdrop" @click.self="closeEditor">
     <form class="modal create-form" @submit.prevent="submit">
-      <button type="button" class="modal-close" @click="showCreate = false">×</button>
+      <button type="button" class="modal-close" @click="closeEditor">×</button>
       <p class="eyebrow">CREATOR STUDIO</p>
-      <h2>创建游戏</h2>
+      <h2>{{ editingGame ? '编辑游戏' : '创建游戏' }}</h2>
       <label class="create-field">
         游戏标题
         <input
@@ -161,15 +188,24 @@
 
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { addGame, coverStyle, isAdmin, state } from '../stores'
+import {
+  addGame,
+  coverStyle,
+  deleteOwnGame,
+  isAdmin,
+  state,
+  updateGame
+} from '../stores'
 
 const primaryTypes = ['ARG/WIG', '现实互动解谜', '网页互动游戏', '网页解谜', '互动叙事']
 const favorites = computed(() => state.games.filter((game) => state.favorites.includes(game.id)))
 const likedGames = computed(() => state.games.filter((game) => state.liked.includes(game.id)))
+const ownGames = computed(() => state.games.filter((game) => Number(game.authorId) === Number(state.user?.id)))
 const showCreate = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const isDragging = ref(false)
+const editingGame = ref(null)
 const form = reactive({
   title: '',
   description: '',
@@ -253,11 +289,53 @@ function resetForm() {
   isDragging.value = false
 }
 
+function openCreate() {
+  resetForm()
+  editingGame.value = null
+  error.value = ''
+  showCreate.value = true
+}
+
+function closeEditor() {
+  if (submitting.value) return
+  showCreate.value = false
+  editingGame.value = null
+  resetForm()
+}
+
+function openEdit(game) {
+  editingGame.value = game
+  Object.assign(form, {
+    title: game.title || '',
+    description: game.description || '',
+    primaryType: game.primaryType || '',
+    tagsText: (game.tags || []).join('、'),
+    playTime: game.playTime || '',
+    url: game.url || '',
+    cover: game.cover || ''
+  })
+  error.value = ''
+  showCreate.value = true
+}
+
+async function removeGame(game) {
+  if (!window.confirm(`确定删除游戏“${game.title}”吗？`)) return
+  try {
+    await deleteOwnGame(game.id)
+    const likedIndex = state.liked.indexOf(game.id)
+    if (likedIndex >= 0) state.liked.splice(likedIndex, 1)
+    const favoriteIndex = state.favorites.indexOf(game.id)
+    if (favoriteIndex >= 0) state.favorites.splice(favoriteIndex, 1)
+  } catch (err) {
+    error.value = err.message || '删除游戏失败'
+  }
+}
+
 async function submit() {
   submitting.value = true
   error.value = ''
   try {
-    await addGame({
+    const payload = {
       title: form.title,
       description: form.description,
       primaryType: form.primaryType,
@@ -265,8 +343,14 @@ async function submit() {
       playTime: form.playTime,
       url: form.url,
       cover: form.cover
-    })
+    }
+    if (editingGame.value) {
+      await updateGame(editingGame.value.id, payload)
+    } else {
+      await addGame(payload)
+    }
     resetForm()
+    editingGame.value = null
     showCreate.value = false
   } catch (err) {
     error.value = err.message || '创建游戏失败'
@@ -376,5 +460,120 @@ async function submit() {
   color: #737c7d;
   font-size: 10px;
   text-align: right;
+}
+
+.published-head {
+  margin-bottom: 14px;
+}
+
+.collection-head {
+  margin-top: 46px;
+}
+
+.owned-game-list {
+  display: grid;
+  border-top: 1px solid #292e2f;
+}
+
+.owned-game-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 82px;
+  border-bottom: 1px solid #292e2f;
+}
+
+.owned-game-link {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 13px;
+  flex: 1;
+}
+
+.owned-game-cover {
+  position: relative;
+  width: 74px;
+  height: 52px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #242a28;
+}
+
+.owned-game-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.owned-game-cover span {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: #d4f34a;
+}
+
+.owned-game-link > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.owned-game-link strong {
+  overflow: hidden;
+  color: #e4e8e7;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owned-game-link small {
+  color: #737c7d;
+  font-size: 10px;
+}
+
+.owned-game-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.manage-button {
+  border: 1px solid #3a4240;
+  border-radius: 4px;
+  padding: 7px 11px;
+  background: #1b1f20;
+  color: #b9c0c0;
+  cursor: pointer;
+  font: 11px Manrope, Arial, sans-serif;
+}
+
+.manage-button:hover {
+  border-color: #d4f34a;
+  color: #d4f34a;
+}
+
+.manage-button.danger-button:hover {
+  border-color: #c8665d;
+  color: #f28c7f;
+}
+
+@media (max-width: 700px) {
+  .owned-game-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 13px 0;
+  }
+
+  .owned-game-link {
+    width: 100%;
+  }
+
+  .owned-game-actions {
+    align-self: flex-end;
+  }
 }
 </style>

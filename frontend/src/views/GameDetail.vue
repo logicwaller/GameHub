@@ -79,13 +79,14 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   addComment,
   coverStyle,
   deleteGameComment,
   isAdmin,
+  loadGame,
   loadGameComments,
   recordGamePlay,
   state,
@@ -101,7 +102,26 @@ const comments = computed(() => (game.value ? state.comments[game.value.id] || [
 const commentText = ref('')
 const actionError = ref('')
 
-loadGameComments(Number(route.params.id)).catch(() => {})
+async function refreshGame() {
+  const gameID = Number(route.params.id)
+  if (!Number.isInteger(gameID) || gameID < 1) return
+  try {
+    await loadGame(gameID)
+    if (game.value) {
+      await loadGameComments(gameID)
+    }
+  } catch (error) {
+    actionError.value = error.message || '读取游戏失败'
+  }
+}
+
+watch(() => route.params.id, () => {
+  void refreshGame()
+})
+
+onMounted(() => {
+  void refreshGame()
+})
 
 async function like() {
   if (!game.value) return

@@ -339,6 +339,52 @@ func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) 
 	return input, nil
 }
 
+func updateGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return gameRecord{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE games SET title = ?, description = ?, primary_type = ?, play_time = ?, url = ?, cover = ? WHERE id = ? AND author_id = ?`, input.Title, input.Description, input.PrimaryType, input.PlayTime, input.URL, input.Cover, input.ID, authorID)
+	if err != nil {
+		return gameRecord{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return gameRecord{}, sql.ErrNoRows
+	}
+	if _, err := tx.Exec(`DELETE FROM game_tags WHERE game_id = ?`, input.ID); err != nil {
+		return gameRecord{}, err
+	}
+	for _, tag := range input.Tags {
+		if _, err := tx.Exec(`INSERT INTO tags (name) VALUES (?) ON DUPLICATE KEY UPDATE name = VALUES(name)`, tag); err != nil {
+			return gameRecord{}, err
+		}
+		var tagID int
+		if err := tx.QueryRow(`SELECT id FROM tags WHERE name = ?`, tag).Scan(&tagID); err != nil {
+			return gameRecord{}, err
+		}
+		if _, err := tx.Exec(`INSERT INTO game_tags (game_id, tag_id) VALUES (?, ?)`, input.ID, tagID); err != nil {
+			return gameRecord{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return gameRecord{}, err
+	}
+	return findGame(db, input.ID)
+}
+
+func deleteGameByAuthor(db *sql.DB, gameID, authorID int) error {
+	result, err := db.Exec(`DELETE FROM games WHERE id = ? AND author_id = ?`, gameID, authorID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	_, _ = db.Exec(`DELETE FROM search_documents WHERE entity_type = 'game' AND entity_id = ?`, gameID)
+	return nil
+}
+
 func listPosts(db *sql.DB) ([]postRecord, error) {
 	rows, err := db.Query(`SELECT p.id, p.title, p.body, p.author_name, COALESCE(u.username, ''), p.created_at FROM posts p LEFT JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC`)
 	if err != nil {

@@ -398,6 +398,8 @@ func main() {
 			item, err := findGame(db, id)
 			if err == nil {
 				items = append(items, item)
+			} else if err == sql.ErrNoRows {
+				cache.zrem("game:hot:rank", value)
 			}
 		}
 		if len(items) == 0 {
@@ -859,6 +861,8 @@ func main() {
 		cache.del(fmt.Sprintf("game:detail:%d", id))
 		cache.del("games:list:::plays")
 		cache.del("games:list:::likes")
+		cache.zrem("game:hot:rank", strconv.Itoa(id))
+		cache.zrem("game:fav:rank", strconv.Itoa(id))
 		c.Status(http.StatusNoContent)
 	})
 	admin.DELETE("/games/:id/comments/:commentID", func(c *gin.Context) {
@@ -959,6 +963,87 @@ func main() {
 		cache.del("games:list:::likes")
 		emitEvent("KAFKA_SEARCH_TOPIC", "search.sync", strconv.Itoa(input.ID), map[string]any{"type": "game.created", "game_id": input.ID})
 		c.JSON(http.StatusCreated, gin.H{"game": input})
+	})
+	secured.PUT("/games/:id", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
+			return
+		}
+		var input gameRecord
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "请填写完整的游戏信息"})
+			return
+		}
+		input.ID = id
+		if len(input.Cover) > 3*1024*1024 {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": "游戏封面过大，请压缩后重新上传"})
+			return
+		}
+		if err := validateGameText(input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		input.PrimaryType = strings.TrimSpace(input.PrimaryType)
+		if !primaryGameTypes[input.PrimaryType] {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "请选择有效的主类型"})
+			return
+		}
+		input.Tags, err = normalizeGameTags(input.Tags)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		updated, err := updateGame(db, input, u.ID)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "游戏不存在或不属于当前用户"})
+			return
+		}
+		if err != nil {
+			log.Printf("更新游戏失败(user=%s, game=%d): %v", u.Username, id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "更新游戏失败"})
+			return
+		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del(fmt.Sprintf("game:comments:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
+		emitEvent("KAFKA_SEARCH_TOPIC", "search.sync", strconv.Itoa(id), map[string]any{"type": "game.updated", "game_id": id})
+		c.JSON(http.StatusOK, gin.H{"game": updated})
+	})
+	secured.DELETE("/games/:id", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "游戏 ID 无效"})
+			return
+		}
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		if err := deleteGameByAuthor(db, id, u.ID); err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"message": "游戏不存在或不属于当前用户"})
+			return
+		} else if err != nil {
+			log.Printf("删除个人游戏失败(user=%s, game=%d): %v", u.Username, id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除游戏失败"})
+			return
+		}
+		cache.del(fmt.Sprintf("game:detail:%d", id))
+		cache.del(fmt.Sprintf("game:comments:%d", id))
+		cache.del("games:list:::plays")
+		cache.del("games:list:::likes")
+		cache.zrem("game:hot:rank", strconv.Itoa(id))
+		cache.zrem("game:fav:rank", strconv.Itoa(id))
+		c.Status(http.StatusNoContent)
 	})
 	secured.POST("/posts", func(c *gin.Context) {
 		var input struct {
