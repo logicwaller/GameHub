@@ -284,4 +284,27 @@ CALL upgrade_gamehub_primary_type() //
 
 DROP PROCEDURE upgrade_gamehub_primary_type //
 
+-- ==================== AI 知识库表 ====================
+
+CREATE TABLE IF NOT EXISTS game_knowledge (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  game_id INT NULL COMMENT '关联游戏ID，NULL表示通用知识',
+  game_name VARCHAR(100) NOT NULL COMMENT '游戏名称（冗余字段，方便检索）',
+  content_type VARCHAR(32) NOT NULL COMMENT '类型: info/strategy/faq/review/tip',
+  title VARCHAR(200) NOT NULL COMMENT '知识标题',
+  content TEXT NOT NULL COMMENT '知识正文',
+  source VARCHAR(500) NOT NULL DEFAULT '' COMMENT '来源（可选）',
+  priority INT NOT NULL DEFAULT 0 COMMENT '优先级，数字越大越优先',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_game_knowledge_game
+    FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE CASCADE,
+  INDEX idx_game_knowledge_game (game_id),
+  INDEX idx_game_knowledge_name (game_name),
+  INDEX idx_game_knowledge_type (content_type),
+  FULLTEXT KEY idx_game_knowledge_text (title, content)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+
+
 DELIMITER ;
