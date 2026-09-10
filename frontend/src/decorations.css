@@ -27,7 +27,7 @@ body::before {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: fill;
 }
 
 .game-cover img + small {
@@ -36,6 +36,34 @@ body::before {
 
 .game-cover::after {
   display: none;
+}
+
+.game-info {
+  display: flex;
+  min-height: 164px;
+  flex-direction: column;
+}
+
+.game-info h3 {
+  display: -webkit-box;
+  min-height: 42px;
+  max-height: 42px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+}
+
+.game-info p {
+  display: -webkit-box;
+  min-height: 58px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.game-info > div {
+  margin-top: auto;
 }
 
 .game-cover:not(:has(img)) span,

@@ -300,6 +300,11 @@ func markAllNotificationsRead(db *sql.DB, userID int) error {
 	return err
 }
 
+func deleteAllNotifications(db *sql.DB, userID int) error {
+	_, err := db.Exec(`DELETE FROM notifications WHERE user_id = ?`, userID)
+	return err
+}
+
 func createGame(db *sql.DB, input gameRecord, authorID int) (gameRecord, error) {
 	tx, err := db.Begin()
 	if err != nil {

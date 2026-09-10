@@ -42,7 +42,7 @@
         </div>
         <div class="game-info">
           <h3 v-html="highlight(game.title)"></h3>
-          <p>{{ game.description }}</p>
+          <p :title="game.description">{{ game.description }}</p>
           <div class="game-card-meta">
             <span class="tag">{{ game.primaryType }}</span>
             <span v-for="tag in game.tags?.slice(0, 2)" :key="tag" class="tag tag-secondary">
@@ -58,9 +58,47 @@
 
     <p v-if="!filtered.length" class="empty">没有找到匹配的游戏</p>
     <div v-else class="pagination">
-      <button class="secondary" :disabled="page === 1" @click="page -= 1">上一页</button>
-      <span>第 {{ page }} / {{ pageCount }} 页</span>
-      <button class="secondary" :disabled="page === pageCount" @click="page += 1">下一页</button>
+      <button
+        class="pagination-arrow"
+        :disabled="page === 1"
+        aria-label="上一页"
+        @click="goToPage(page - 1)"
+      >
+        ←
+      </button>
+      <div class="pagination-pages">
+        <button
+          v-for="(item, index) in visiblePages"
+          :key="`${item}-${index}`"
+          class="pagination-page"
+          :class="{ active: item === page }"
+          :disabled="item === '…'"
+          @click="item !== '…' && goToPage(item)"
+        >
+          {{ item }}
+        </button>
+      </div>
+      <div class="pagination-jump">
+        <label for="page-number">跳转至</label>
+        <input
+          id="page-number"
+          v-model.number="pageInput"
+          type="number"
+          min="1"
+          :max="pageCount"
+          @keydown.enter="jumpToPage"
+        >
+        <span>/ {{ pageCount }}</span>
+        <button class="pagination-go" @click="jumpToPage">确定</button>
+      </div>
+      <button
+        class="pagination-arrow"
+        :disabled="page === pageCount"
+        aria-label="下一页"
+        @click="goToPage(page + 1)"
+      >
+        →
+      </button>
     </div>
   </section>
 </template>
@@ -73,6 +111,7 @@ const query = ref('')
 const primaryType = ref('全部')
 const sort = ref('plays')
 const page = ref(1)
+const pageInput = ref(1)
 const pageSize = 9
 const categories = ['全部', 'ARG/WIG', '现实互动解谜', '网页互动游戏', '网页解谜', '互动叙事']
 
@@ -91,6 +130,14 @@ const filtered = computed(() => {
 
 const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const visiblePages = computed(() => {
+  const total = pageCount.value
+  const current = page.value
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1)
+  if (current <= 4) return [1, 2, 3, 4, 5, '…', total]
+  if (current >= total - 3) return [1, '…', total - 4, total - 3, total - 2, total - 1, total]
+  return [1, '…', current - 1, current, current + 1, '…', total]
+})
 const format = (value) => (value > 999 ? `${(value / 1000).toFixed(1)}k` : value || 0)
 
 function highlight(text) {
@@ -105,9 +152,19 @@ function highlight(text) {
   return keyword ? escaped.replace(new RegExp(`(${keyword})`, 'ig'), '<mark>$1</mark>') : escaped
 }
 
+function goToPage(target) {
+  page.value = Math.min(Math.max(Number(target) || 1, 1), pageCount.value)
+  pageInput.value = page.value
+}
+
+function jumpToPage() {
+  goToPage(pageInput.value)
+}
+
 let searchTimer
 watch([query, sort, primaryType], ([nextQuery, nextSort, nextPrimaryType]) => {
   page.value = 1
+  pageInput.value = 1
   clearTimeout(searchTimer)
   searchTimer = setTimeout(() => loadGames({
     q: nextQuery.trim(),
@@ -118,5 +175,123 @@ watch([query, sort, primaryType], ([nextQuery, nextSort, nextPrimaryType]) => {
 
 watch(pageCount, (count) => {
   if (page.value > count) page.value = count
+  pageInput.value = page.value
 })
 </script>
+
+<style scoped>
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 38px;
+  padding: 14px 18px;
+  border: 1px solid #2b2f30;
+  border-radius: 6px;
+  background: #15181a;
+}
+
+.pagination-arrow,
+.pagination-page,
+.pagination-go {
+  border: 1px solid #353a3b;
+  background: #1b1f20;
+  color: #aeb5b6;
+  cursor: pointer;
+  font: 12px Manrope, Arial, sans-serif;
+}
+
+.pagination-arrow {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 18px;
+}
+
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pagination-page {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+}
+
+.pagination-page.active {
+  background: #d4f34a;
+  border-color: #d4f34a;
+  color: #121500;
+  font-weight: 700;
+}
+
+.pagination-page:disabled {
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
+}
+
+.pagination-arrow:hover:not(:disabled),
+.pagination-page:hover:not(:disabled),
+.pagination-go:hover {
+  border-color: #d4f34a;
+  color: #d4f34a;
+}
+
+.pagination-page.active:hover {
+  color: #121500;
+}
+
+.pagination-arrow:disabled {
+  cursor: not-allowed;
+  opacity: .35;
+}
+
+.pagination-jump {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #737b7c;
+  font-size: 12px;
+}
+
+.pagination-jump input {
+  width: 48px;
+  height: 32px;
+  padding: 0 7px;
+  border: 1px solid #353a3b;
+  border-radius: 4px;
+  outline: 0;
+  background: #111315;
+  color: #f3f4f4;
+  text-align: center;
+  font: 12px Manrope, Arial, sans-serif;
+}
+
+.pagination-jump input:focus {
+  border-color: #d4f34a;
+}
+
+.pagination-go {
+  height: 32px;
+  padding: 0 11px;
+  border-radius: 4px;
+}
+
+@media (max-width: 700px) {
+  .pagination {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .pagination-jump {
+    width: 100%;
+    justify-content: center;
+    order: 3;
+  }
+}
+</style>

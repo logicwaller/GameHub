@@ -82,6 +82,22 @@ func normalizeGameTags(tags []string) ([]string, error) {
 	return items, nil
 }
 
+func validateGameText(input gameRecord) error {
+	if length := len([]rune(input.Title)); length == 0 || length > 100 {
+		return fmt.Errorf("游戏标题长度必须为 1-100 个字符")
+	}
+	if length := len([]rune(input.Description)); length == 0 || length > 2000 {
+		return fmt.Errorf("游戏简介长度必须为 1-2000 个字符")
+	}
+	if len([]rune(input.PlayTime)) > 50 {
+		return fmt.Errorf("预计游玩时间不能超过 50 个字符")
+	}
+	if len([]rune(input.URL)) > 500 {
+		return fmt.Errorf("网页链接不能超过 500 个字符")
+	}
+	return nil
+}
+
 func jwtSecret() string {
 	if value := os.Getenv("JWT_SECRET"); value != "" {
 		return value
@@ -676,6 +692,19 @@ func main() {
 		}
 		c.Status(http.StatusNoContent)
 	})
+	secured.DELETE("/notifications", func(c *gin.Context) {
+		username, _ := c.Get("username")
+		u, _, err := findUser(db, username.(string))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+			return
+		}
+		if err := deleteAllNotifications(db, u.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "删除通知失败"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
 	secured.POST("/games/:id/like", func(c *gin.Context) {
 		id, err := strconv.Atoi(c.Param("id"))
 		if err != nil {
@@ -894,6 +923,14 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "请填写完整的游戏信息"})
 			return
 		}
+		if len(input.Cover) > 3*1024*1024 {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": "游戏封面过大，请压缩后重新上传"})
+			return
+		}
+		if err := validateGameText(input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
 		input.PrimaryType = strings.TrimSpace(input.PrimaryType)
 		if !primaryGameTypes[input.PrimaryType] {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "请选择有效的主类型"})
@@ -913,6 +950,7 @@ func main() {
 		}
 		input, err = createGame(db, input, u.ID)
 		if err != nil {
+			log.Printf("创建游戏失败(user=%s, cover_bytes=%d): %v", u.Username, len(input.Cover), err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "创建游戏失败"})
 			return
 		}

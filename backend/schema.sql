@@ -185,6 +185,9 @@ CREATE TABLE IF NOT EXISTS analytics_backfill_state (
   completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
+-- 封面以压缩后的 Data URL 暂存；兼容旧版本中较短的 cover 字段。
+ALTER TABLE games MODIFY COLUMN cover LONGTEXT NULL;
+
 CREATE TABLE IF NOT EXISTS agent_conversations (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   user_id INT NOT NULL,

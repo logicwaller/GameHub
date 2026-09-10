@@ -239,6 +239,11 @@ export async function markAllNotificationsRead() {
   state.notifications.forEach((notification) => { notification.read = true })
 }
 
+export async function removeAllNotifications() {
+  await postAuth('/api/notifications', undefined, 'DELETE')
+  state.notifications.splice(0, state.notifications.length)
+}
+
 export function setUser(user, token, refresh) {
   if (token) localStorage.setItem('gamehub_token', token)
   if (refresh) localStorage.setItem('gamehub_refresh_token', refresh)
