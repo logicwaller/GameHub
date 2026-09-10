@@ -142,10 +142,46 @@ func RegisterRoutes(group *gin.RouterGroup, db *sql.DB, resolveUser UserResolver
 			return
 		}
 
+		// ① 获取历史消息（已包含刚保存的当前问题）
+		historyMessages, err := ListMessages(db, input.ConversationID, userID)
+		if err != nil {
+			log.Printf("Agent 读取历史消息失败(conversation_id=%d): %v", input.ConversationID, err)
+			historyMessages = nil
+		}
+
+		// ② 提取历史中的用户提问，用于知识库检索
+		historyQuestions := make([]string, 0)
+		for _, m := range historyMessages {
+			if m.Role == "user" {
+				historyQuestions = append(historyQuestions, m.Text)
+			}
+		}
+
+		// ③ 用历史 + 当前问题检索知识库
+		searchQuery := BuildSearchQuery(historyQuestions, input.Question)
+		knowledge := SearchKnowledge(db, searchQuery)
+		systemPrompt := BuildSystemPrompt(knowledge)
+
+		// ④ 组装消息列表：[system, ...最近10条历史, 当前问题]
+		messages := make([]ChatMessage, 0, len(historyMessages)+2)
+		messages = append(messages, ChatMessage{Role: "system", Content: systemPrompt})
+
+		start := 0
+		if len(historyMessages) > 10 {
+			start = len(historyMessages) - 10
+		}
+		for _, m := range historyMessages[start:] {
+			messages = append(messages, ChatMessage{
+				Role:    m.Role,
+				Content: m.Text,
+			})
+		}
+
+		// ⑤ 调用 AI
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		chunkChan, err := client.StreamChat(c.Request.Context(), input.Question)
+		chunkChan, err := client.StreamChat(c.Request.Context(), messages)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return

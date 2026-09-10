@@ -10,6 +10,10 @@ import (
 	"net/http"
 	"strings"
 )
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
 
 // Client 是 Agent 的模型客户端。
 type Client struct {
@@ -27,16 +31,15 @@ func NewClient(apiKey string) *Client {
 }
 
 // StreamChat 返回模型生成的文本片段。
-func (c *Client) StreamChat(ctx context.Context, question string) (<-chan string, error) {
+
+func (c *Client) StreamChat(ctx context.Context, messages []ChatMessage) (<-chan string, error) {
 	if c == nil || c.apiKey == "" {
 		return nil, fmt.Errorf("智谱 API Key 未设置")
 	}
 	body, err := json.Marshal(map[string]any{
-		"model": "glm-4-flash",
-		"messages": []map[string]string{{
-			"role": "user", "content": question,
-		}},
-		"stream": true,
+		"model":    "glm-4-flash",
+		"messages": messages,
+		"stream":   true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
@@ -47,6 +50,7 @@ func (c *Client) StreamChat(ctx context.Context, question string) (<-chan string
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
